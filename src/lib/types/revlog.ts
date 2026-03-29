@@ -1,4 +1,4 @@
 export interface RevlogEntry {
-  id: number;
-  cardId: number;
+    id: number;
+    cardId: number;
 }

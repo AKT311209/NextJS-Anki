@@ -3,19 +3,19 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NextJS Anki",
-  description: "Client-first spaced repetition in the browser.",
-  manifest: "/manifest.webmanifest",
+    title: "NextJS Anki",
+    description: "Client-first spaced repetition in the browser.",
+    manifest: "/manifest.webmanifest",
 };
 
 export default function RootLayout({
-  children,
+    children,
 }: Readonly<{
-  children: ReactNode;
+    children: ReactNode;
 }>) {
-  return (
-    <html lang="en">
-      <body>{children}</body>
-    </html>
-  );
+    return (
+        <html lang="en">
+            <body>{children}</body>
+        </html>
+    );
 }

@@ -1,6 +1,6 @@
 export function useSearch() {
-  return {
-    query: "",
-    results: [] as Array<{ id: number }>,
-  };
+    return {
+        query: "",
+        results: [] as Array<{ id: number }>,
+    };
 }

@@ -1,3 +1,3 @@
 export interface Note {
-  id: number;
+    id: number;
 }

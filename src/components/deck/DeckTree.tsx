@@ -1,3 +1,3 @@
 export function DeckTree() {
-  return <div>DeckTree placeholder</div>;
+    return <div>DeckTree placeholder</div>;
 }

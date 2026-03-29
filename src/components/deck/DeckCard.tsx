@@ -1,3 +1,3 @@
 export function DeckCard() {
-  return <div>DeckCard placeholder</div>;
+    return <div>DeckCard placeholder</div>;
 }

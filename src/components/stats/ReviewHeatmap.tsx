@@ -1,3 +1,3 @@
 export function ReviewHeatmap() {
-  return <div>ReviewHeatmap placeholder</div>;
+    return <div>ReviewHeatmap placeholder</div>;
 }

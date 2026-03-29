@@ -1,3 +1,3 @@
 export function Toast() {
-  return <div>Toast placeholder</div>;
+    return <div>Toast placeholder</div>;
 }

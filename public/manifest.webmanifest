@@ -1,18 +1,18 @@
 {
-  "name": "NextJS Anki",
-  "short_name": "Anki",
-  "description": "Client-first spaced repetition in the browser.",
-  "start_url": "/",
-  "scope": "/",
-  "display": "standalone",
-  "background_color": "#020617",
-  "theme_color": "#0f172a",
-  "icons": [
-    {
-      "src": "/icons/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
-  ]
+    "name": "NextJS Anki",
+    "short_name": "Anki",
+    "description": "Client-first spaced repetition in the browser.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#020617",
+    "theme_color": "#0f172a",
+    "icons": [
+        {
+            "src": "/icons/icon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
 }

@@ -1,5 +1,5 @@
 export function useStats() {
-  return {
-    reviewsToday: 0,
-  };
+    return {
+        reviewsToday: 0,
+    };
 }

@@ -1,5 +1,5 @@
 export function useCollection() {
-  return {
-    ready: false,
-  };
+    return {
+        ready: false,
+    };
 }

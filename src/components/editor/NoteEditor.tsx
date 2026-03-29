@@ -1,3 +1,3 @@
 export function NoteEditor() {
-  return <div>NoteEditor placeholder</div>;
+    return <div>NoteEditor placeholder</div>;
 }

@@ -1,5 +1,5 @@
 export function useReview() {
-  return {
-    hasCard: false,
-  };
+    return {
+        hasCard: false,
+    };
 }

@@ -1,3 +1,3 @@
 export function AnswerButtons() {
-  return <div>AnswerButtons placeholder</div>;
+    return <div>AnswerButtons placeholder</div>;
 }

@@ -1,3 +1,3 @@
 export function SearchBar() {
-  return <div>SearchBar placeholder</div>;
+    return <div>SearchBar placeholder</div>;
 }
