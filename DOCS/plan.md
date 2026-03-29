@@ -164,6 +164,35 @@ src/
 
 ## Phased Implementation
 
+### Potential Quicks (Quick Wins)
+
+If the immediate goal is to de-risk fast and ship usable value early, run these quick wins before full parity work.
+
+| Quick | Goal | Scope (include) | Defer (exclude) | Exit criteria |
+|------|------|------------------|------------------|---------------|
+| Quick 1 | **First review in browser** | Minimal schema (`col`, `notes`, `cards`, `revlog`), one default deck, Basic notetype, create note → answer card flow | Full browser, stats, import/export, advanced filters | Can add a Basic note and complete at least one full review cycle with persisted state |
+| Quick 2 | **Template/rendering confidence** | Parser + renderer for `{{Field}}`, conditionals, `{{FrontSide}}`, basic cloze `{{c1::...}}` | Rare filters, delimiter switching, advanced TTS/furigana | Built-in Basic + Basic Reversed + Cloze sample cards render correctly |
+| Quick 3 | **Scheduler parity smoke path** | New/Learn/Review transitions, revlog writes, queue order learn → review → new | Optimizer, easy-days simulation, advanced bury edge cases | Intervals and transitions on golden test cards match expected output |
+| Quick 4 | **Search MVP** | `deck:`, `note:`, `tag:`, plain text, `is:due` → SQL | Full search grammar (`rated:`, regex, advanced props) | User can reliably find due cards and tagged cards in browser UI |
+| Quick 5 | **Safety + offline baseline** | OPFS DB persistence, app shell cache, manual backup export button | Full sync, background backup scheduler, conflict UI | App opens offline and data survives reloads/restarts |
+
+### Revised Fast-Track Sequence (Recommended)
+
+1. **Sprint A (Foundation + Quick 1)**
+   - Complete Phase 0 + minimal subset of Phase 1 and Phase 4
+   - Deliver end-to-end review vertical slice
+2. **Sprint B (Quick 2 + Quick 3)**
+   - Complete core parts of Phase 2 and Phase 3
+   - Validate scheduler transitions and rendering parity on fixture deck
+3. **Sprint C (Quick 4)**
+   - Deliver search MVP + basic card browser workflow from Phase 5
+4. **Sprint D (Quick 5)**
+   - Complete essential Phase 8 offline path and backup workflow
+5. **Then continue full roadmap**
+   - Resume remaining scope in Phases 5–9 for full Anki-like parity
+
+This ordering preserves the original architecture while reducing early project risk and time-to-first-value.
+
 ### Phase 0: Project Scaffolding
 
 **Goal**: Bootable NextJS app with all tooling configured.
@@ -557,6 +586,14 @@ The internal SQLite schema closely mirrors Anki's `schema11.sql` for:
 ---
 
 ## Verification Checklist
+
+### Quick-Track Gates
+
+- [ ] **Quick 1**: Add Basic note → review once → close/reopen app → state persists
+- [ ] **Quick 2**: Basic/Basic+Reverse/Cloze sample templates render as expected
+- [ ] **Quick 3**: New/Learn/Review transitions + intervals validated on golden fixtures
+- [ ] **Quick 4**: Search MVP operators (`deck:`, `note:`, `tag:`, `is:due`, text) work end-to-end
+- [ ] **Quick 5**: App launches offline with existing data and can perform backup export
 
 After each phase, verify:
 
