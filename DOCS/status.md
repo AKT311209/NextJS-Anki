@@ -83,6 +83,42 @@
 	- `npm run lint` ✅
 	- `npm test` ✅
 
+- Implemented **Phase 3: Card Rendering** across `src/lib/rendering/`.
+	- Added `src/lib/rendering/template-parser.ts`:
+		- Mustache-like AST parser for text, replacements, conditionals, negated conditionals, and template comments.
+		- Supports legacy delimiter-switch directive (`{{=<% %>=}}`) and delimiter updates during parsing.
+		- Added structured parse errors (`TemplateParseError`) and AST serialization helper.
+	- Added `src/lib/rendering/template-renderer.ts`:
+		- AST/string template rendering with conditional evaluation.
+		- Field replacement + filter pipeline integration.
+		- `{{FrontSide}}` support for answer-side rendering.
+		- Cloze conditional support (`{{#cN}}` / `{{^cN}}`).
+		- Sync + async rendering APIs (`renderTemplate`, `renderTemplateAsync`, `renderCardTemplates`, `renderCardTemplatesAsync`).
+		- Built-in empty-field checker (`fieldIsEmpty`) for template conditional behavior.
+	- Added `src/lib/rendering/cloze.ts`:
+		- Nested cloze parser and renderer for `{{c1::text}}`, hints (`::hint`), and multi-ordinal clozes (`{{c1,2::...}}`).
+		- Active/inactive cloze HTML generation with ordinal metadata.
+		- Cloze number discovery and text-only extraction helpers.
+	- Added `src/lib/rendering/filters.ts`:
+		- Built-in filters: `text`, `type`, `type-cloze`, `type-nc`, `furigana`, `kana`, `kanji`, `hint`, `tts`, `cloze`, `cloze-only`.
+		- Anki-like type-filter normalization (`cloze:type`, `nc:type`, and trailing `type`).
+		- Compatibility fallback for both `filter:Field` and `Field:filter` template notation.
+	- Added `src/lib/rendering/sanitizer.ts`:
+		- HTML sanitizer with allowlisted tags/attributes, event-handler stripping, unsafe URL blocking, and optional comment/data-attribute/style preservation controls.
+		- Added `stripHtmlToText()` helper used by filters and rendering behavior.
+	- Added `src/lib/rendering/math.ts`:
+		- KaTeX-backed inline/block math rendering for `\(...\)` and `$$...$$`.
+		- Lazy module loading, cache management, sync + async rendering APIs.
+	- Dependency change:
+		- Added `katex` for production-grade math rendering.
+- Added verification tests:
+	- `src/lib/rendering/__tests__/phase3-rendering.test.ts`
+		- Covers parser behavior, card rendering flow, filter behavior, cloze rendering, sanitizer behavior, math rendering + cache, and empty-field checks.
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run lint` ✅
+	- `npm test` ✅
+
 - Implemented **Phase 2: Core Domain & Scheduling**.
 	- Replaced placeholder domain models in `src/lib/types/` with schema-aligned types and scheduler contracts:
 		- `card.ts`, `note.ts`, `deck.ts`, `notetype.ts`, `revlog.ts`, `scheduler.ts`
