@@ -83,3 +83,43 @@
 	- `npm run lint` ✅
 	- `npm test` ✅
 
+- Implemented **Phase 2: Core Domain & Scheduling**.
+	- Replaced placeholder domain models in `src/lib/types/` with schema-aligned types and scheduler contracts:
+		- `card.ts`, `note.ts`, `deck.ts`, `notetype.ts`, `revlog.ts`, `scheduler.ts`
+	- Added scheduler configuration and FSRS parameter utilities in `src/lib/scheduler/params.ts`:
+		- Config normalization and limits clamping
+		- FSRS parameter generation (request retention, max interval, steps, weights)
+		- Learning/relearning step parsing
+		- Review-history-based optimization summary helper (`optimizeSchedulerParameters`)
+	- Implemented deterministic interval fuzzing in `src/lib/scheduler/fuzz.ts`:
+		- Seeded by card ID + day for stable fuzz behavior
+	- Implemented scheduler state/data mapping in `src/lib/scheduler/states.ts`:
+		- Anki card type/queue ↔ ts-fsrs state conversion
+		- Due-date conversions (intraday vs day-based)
+		- Card `data` JSON read/merge helpers and FSRS memory extraction
+	- Implemented `src/lib/scheduler/engine.ts` with:
+		- ts-fsrs integration for preview/answer transitions
+		- 4-state model mapping (New/Learning/Review/Relearning)
+		- SM-2 fallback path for legacy cards (`data.scheduler = "sm2"` / legacy payload)
+		- Revlog-ready answer output and leech flagging logic
+	- Implemented queue builder in `src/lib/scheduler/queue.ts`:
+		- Ordered queue assembly: learning (intraday + interday) → review → new
+		- Per-day limits: learning/review/new
+		- Optional sibling filtering and buried-card exclusions
+	- Implemented sibling bury/unbury helpers in `src/lib/scheduler/burying.ts`.
+	- Implemented answering persistence service in `src/lib/scheduler/answering.ts`:
+		- Card updates + revlog insert
+		- Optional sibling bury on answer
+	- Expanded scheduler worker API in `src/workers/scheduler.worker.ts`:
+		- `previewCard`, `answerCard`, `answerBatch`, and `optimizeParameters` endpoints over comlink
+	- Added test coverage in `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`:
+		- FSRS transition preview smoke test
+		- SM-2 fallback behavior
+		- Scheduler parameter optimization summary
+		- Queue ordering/limits + sibling filtering
+		- Persisted answer flow (revlog write, leech flag, sibling bury)
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run lint` ✅
+	- `npm test` ✅
+
