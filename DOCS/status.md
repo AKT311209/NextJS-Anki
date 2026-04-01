@@ -159,4 +159,40 @@
 	- `npm run lint` ✅
 	- `npm test` ✅
 
+- Implemented **Phase 4: Review System (UI)**.
+	- Replaced review placeholders with a complete interactive review flow:
+		- `src/app/review/[deckId]/page.tsx`
+			- Session lifecycle UI states (loading, active, complete, error)
+			- Keyboard shortcuts: `Space` (reveal / Good), `1` Again, `2` Hard, `3` Good, `4` Easy
+			- Integrated progress panel, answer actions, and undo entry point
+	- Implemented review components in `src/components/review/`:
+		- `ReviewCard.tsx` — question/answer display + reveal action
+		- `AnswerButtons.tsx` — color-coded Again/Hard/Good/Easy controls with dynamic interval labels and shortcut hints
+		- `ReviewProgress.tsx` — session progress bar + learning/review/new counts
+		- `CardHtml.tsx` — shadow DOM renderer, night-mode CSS injection, image-safe rendering, and `[sound:...]` tag-to-audio conversion with autoplay attempt
+	- Implemented full review session hook logic in `src/hooks/use-review.ts`:
+		- Queue loading via scheduler queue builder
+		- Notetype/note/template hydration and card-side rendering
+		- Predicted interval labels from scheduler previews
+		- Answer persistence via scheduler answering service
+		- Undo flow that restores prior card/sibling states and deletes the corresponding revlog entry
+	- Implemented real collection lifecycle hook in `src/hooks/use-collection.ts`:
+		- Shared DB manager initialization and connection retrieval
+		- Ready/loading/error state exposure for client-side hooks
+	- Replaced review store placeholder with full state machine in `src/stores/review-store.ts`:
+		- Session stages, queue snapshot, active card payload, counts, answer history stack
+		- Actions for session start, reveal, answer progression, undo application, error/reset
+	- Added Phase 4 verification tests:
+		- `src/stores/__tests__/phase4-review-store.test.ts` (session transitions + undo stack behavior)
+		- `src/components/review/__tests__/phase4-review-ui.test.tsx` (answer buttons, reveal UI, progress display, sound-tag rendering)
+	- Key implementation decisions:
+		- Scheduler queue is rebuilt after each answer/undo to keep due ordering and bury behavior authoritative from DB state.
+		- Card HTML is rendered in shadow DOM to isolate card CSS from app styles while preserving a night-mode baseline.
+		- Deck/global config parsing is tolerant of both simplified app config keys and Anki-like nested config shapes.
+	- Verification completed:
+		- `npm run typecheck` ✅
+		- `npm run lint` ✅
+		- `npm test` ✅
+
+
 
