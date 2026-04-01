@@ -1,9 +1,9 @@
 import type { Database as SqlJsDatabase } from "sql.js";
 
 export interface SchemaMigration {
-	readonly version: number;
-	readonly name: string;
-	readonly sql: string;
+    readonly version: number;
+    readonly name: string;
+    readonly sql: string;
 }
 
 export const SCHEMA_MIGRATION_TABLE = "_anki_schema_migrations";
@@ -105,58 +105,58 @@ VALUES (
 `;
 
 export const PHASE1_MIGRATIONS: readonly SchemaMigration[] = [
-	{
-		version: 1,
-		name: "schema11-core",
-		sql: SCHEMA11_CORE_SQL,
-	},
+    {
+        version: 1,
+        name: "schema11-core",
+        sql: SCHEMA11_CORE_SQL,
+    },
 ] as const;
 
 export function applyMigrations(database: SqlJsDatabase): void {
-	ensureMigrationTable(database);
-	const appliedVersions = getAppliedVersions(database);
+    ensureMigrationTable(database);
+    const appliedVersions = getAppliedVersions(database);
 
-	for (const migration of PHASE1_MIGRATIONS) {
-		if (appliedVersions.has(migration.version)) {
-			continue;
-		}
+    for (const migration of PHASE1_MIGRATIONS) {
+        if (appliedVersions.has(migration.version)) {
+            continue;
+        }
 
-		database.run("BEGIN IMMEDIATE TRANSACTION");
-		try {
-			database.exec(migration.sql);
-			database.run(
-				`
+        database.run("BEGIN IMMEDIATE TRANSACTION");
+        try {
+            database.exec(migration.sql);
+            database.run(
+                `
 				INSERT INTO ${SCHEMA_MIGRATION_TABLE} (version, name, applied_at)
 				VALUES (?, ?, ?)
 				`,
-				[migration.version, migration.name, Date.now()],
-			);
-			database.run("COMMIT");
-		} catch (error) {
-			database.run("ROLLBACK");
-			throw error;
-		}
-	}
+                [migration.version, migration.name, Date.now()],
+            );
+            database.run("COMMIT");
+        } catch (error) {
+            database.run("ROLLBACK");
+            throw error;
+        }
+    }
 }
 
 export function getCurrentSchemaVersion(database: SqlJsDatabase): number {
-	ensureMigrationTable(database);
+    ensureMigrationTable(database);
 
-	const result = database.exec(`SELECT MAX(version) as version FROM ${SCHEMA_MIGRATION_TABLE}`);
-	if (result.length === 0 || result[0].values.length === 0) {
-		return 0;
-	}
+    const result = database.exec(`SELECT MAX(version) as version FROM ${SCHEMA_MIGRATION_TABLE}`);
+    if (result.length === 0 || result[0].values.length === 0) {
+        return 0;
+    }
 
-	const value = result[0].values[0]?.[0];
-	if (typeof value !== "number") {
-		return 0;
-	}
+    const value = result[0].values[0]?.[0];
+    if (typeof value !== "number") {
+        return 0;
+    }
 
-	return value;
+    return value;
 }
 
 function ensureMigrationTable(database: SqlJsDatabase): void {
-	database.exec(`
+    database.exec(`
 		CREATE TABLE IF NOT EXISTS ${SCHEMA_MIGRATION_TABLE} (
 			version integer PRIMARY KEY,
 			name text NOT NULL,
@@ -166,19 +166,19 @@ function ensureMigrationTable(database: SqlJsDatabase): void {
 }
 
 function getAppliedVersions(database: SqlJsDatabase): Set<number> {
-	const versions = new Set<number>();
-	const result = database.exec(`SELECT version FROM ${SCHEMA_MIGRATION_TABLE}`);
+    const versions = new Set<number>();
+    const result = database.exec(`SELECT version FROM ${SCHEMA_MIGRATION_TABLE}`);
 
-	if (result.length === 0) {
-		return versions;
-	}
+    if (result.length === 0) {
+        return versions;
+    }
 
-	for (const row of result[0].values) {
-		const value = row[0];
-		if (typeof value === "number") {
-			versions.add(value);
-		}
-	}
+    for (const row of result[0].values) {
+        const value = row[0];
+        if (typeof value === "number") {
+            versions.add(value);
+        }
+    }
 
-	return versions;
+    return versions;
 }
