@@ -17,14 +17,23 @@ interface DeckOptionForm {
     readonly relearningSteps: string;
     readonly requestRetention: number;
     readonly maximumInterval: number;
-    readonly burySiblings: boolean;
+    readonly fsrsWeights: readonly number[];
+    readonly buryNew: boolean;
+    readonly buryReviews: boolean;
+    readonly buryInterdayLearning: boolean;
+    readonly leechAction: "tag-only" | "suspend";
+    readonly newCardsIgnoreReviewLimit: boolean;
+    readonly applyAllParentLimits: boolean;
     readonly enableFuzz: boolean;
 }
 
 interface RevlogOptimizationRow {
+    readonly id: number;
+    readonly cid: number;
     readonly ease: number;
     readonly ivl: number;
     readonly lastIvl: number;
+    readonly type: number;
 }
 
 const DEFAULT_FORM: DeckOptionForm = {
@@ -35,9 +44,19 @@ const DEFAULT_FORM: DeckOptionForm = {
     relearningSteps: "10m",
     requestRetention: 0.9,
     maximumInterval: 36500,
-    burySiblings: true,
+    fsrsWeights: [],
+    buryNew: false,
+    buryReviews: false,
+    buryInterdayLearning: false,
+    leechAction: "tag-only",
+    newCardsIgnoreReviewLimit: false,
+    applyAllParentLimits: false,
     enableFuzz: true,
 };
+
+const DESIRED_RETENTION_MIN = 0.8;
+const DESIRED_RETENTION_MAX = 0.99;
+const DESIRED_RETENTION_STEP = 0.01;
 
 export default function DeckOptionsPage() {
     const params = useParams<{ deckId: string }>();
@@ -77,10 +96,13 @@ export default function DeckOptionsPage() {
             }
 
             const configId = currentDeck.conf ?? DEFAULT_DECK_CONFIG_ID;
-            const existingConfig = await config.getDeckConfig(configId);
+            const [existingConfig, globalConfig] = await Promise.all([
+                config.getDeckConfig(configId),
+                config.getGlobalConfig(),
+            ]);
 
             setDeck(currentDeck);
-            setForm(resolveDeckOptionForm(existingConfig));
+            setForm(resolveDeckOptionForm(existingConfig, globalConfig));
             setOptimization(null);
         } catch (cause) {
             const message = cause instanceof Error ? cause.message : "Failed to load deck options.";
@@ -118,6 +140,9 @@ export default function DeckOptionsPage() {
 
             const learningSteps = parseSteps(form.learningSteps);
             const relearningSteps = parseSteps(form.relearningSteps);
+            const normalizedRetention = normalizeRequestRetention(form.requestRetention);
+            const normalizedMaximumInterval = Math.max(1, Math.trunc(form.maximumInterval));
+            const burySiblings = form.buryNew || form.buryReviews || form.buryInterdayLearning;
 
             await config.updateDeckConfig(configId, {
                 id: configId,
@@ -127,22 +152,41 @@ export default function DeckOptionsPage() {
                 learningPerDay: form.learningPerDay,
                 learningSteps,
                 relearningSteps,
-                requestRetention: form.requestRetention,
-                maximumInterval: form.maximumInterval,
-                burySiblings: form.burySiblings,
+                requestRetention: normalizedRetention,
+                maximumInterval: normalizedMaximumInterval,
+                fsrsWeights: form.fsrsWeights,
+                burySiblings,
+                buryNew: form.buryNew,
+                buryReviews: form.buryReviews,
+                buryInterdayLearning: form.buryInterdayLearning,
+                leechAction: form.leechAction,
                 enableFuzz: form.enableFuzz,
                 new: {
                     perDay: form.newPerDay,
                     delays: learningSteps.map(stepToMinutes),
+                    bury: form.buryNew,
                 },
                 rev: {
                     perDay: form.reviewsPerDay,
-                    maxIvl: form.maximumInterval,
+                    maxIvl: normalizedMaximumInterval,
+                    bury: form.buryReviews,
                 },
                 lapse: {
                     delays: relearningSteps.map(stepToMinutes),
+                    leechAction: form.leechAction === "suspend" ? 0 : 1,
                 },
             });
+
+            await config.updateGlobalConfig({
+                newCardsIgnoreReviewLimit: form.newCardsIgnoreReviewLimit,
+                applyAllParentLimits: form.applyAllParentLimits,
+            });
+
+            setForm((current) => ({
+                ...current,
+                requestRetention: normalizedRetention,
+                maximumInterval: normalizedMaximumInterval,
+            }));
 
             setStatus("Deck options saved.");
         } catch (cause) {
@@ -164,11 +208,11 @@ export default function DeckOptionsPage() {
         try {
             const rows = await collection.connection.select<RevlogOptimizationRow>(
                 `
-                SELECT r.ease, r.ivl, r.lastIvl
+                SELECT r.id, r.cid, r.ease, r.ivl, r.lastIvl, r.type
                 FROM revlog r
                 INNER JOIN cards c ON c.id = r.cid
                 WHERE c.did = ?
-                ORDER BY r.id DESC
+                ORDER BY c.id ASC, r.id ASC
                 LIMIT 20000
                 `,
                 [deck.id],
@@ -182,10 +226,11 @@ export default function DeckOptionsPage() {
             setOptimization(optimized);
             setForm((current) => ({
                 ...current,
-                requestRetention: optimized.requestRetention,
-                maximumInterval: optimized.maximumInterval,
+                fsrsWeights: [...optimized.weights],
             }));
-            setStatus(`Optimizer processed ${optimized.reviewCount} review(s).`);
+            setStatus(
+                `Optimizer processed ${optimized.reviewCount} review(s) and produced ${optimized.weights.length} parameter(s).`,
+            );
         } catch (cause) {
             const message = cause instanceof Error ? cause.message : "Failed to run optimizer.";
             setError(message);
@@ -272,10 +317,15 @@ export default function DeckOptionsPage() {
                         <NumberField
                             label="Desired retention"
                             value={form.requestRetention}
-                            min={0.8}
-                            max={0.99}
-                            step={0.01}
-                            onChange={(value) => setForm((current) => ({ ...current, requestRetention: value }))}
+                            min={DESIRED_RETENTION_MIN}
+                            max={DESIRED_RETENTION_MAX}
+                            step={DESIRED_RETENTION_STEP}
+                            onChange={(value) =>
+                                setForm((current) => ({
+                                    ...current,
+                                    requestRetention: normalizeRequestRetention(value),
+                                }))
+                            }
                         />
                         <NumberField
                             label="Maximum interval (days)"
@@ -286,24 +336,87 @@ export default function DeckOptionsPage() {
                         />
                     </div>
 
-                    <div className="flex flex-wrap gap-4 text-sm">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="space-y-1 text-sm">
+                            <span className="text-slate-300">Leech action</span>
+                            <select
+                                value={form.leechAction}
+                                onChange={(event) => {
+                                    const value = event.currentTarget.value === "suspend" ? "suspend" : "tag-only";
+                                    setForm((current) => ({ ...current, leechAction: value }));
+                                }}
+                                className="w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 outline-none"
+                            >
+                                <option value="tag-only">Tag only</option>
+                                <option value="suspend">Suspend card</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
                         <label className="inline-flex items-center gap-2 text-slate-200">
                             <input
                                 type="checkbox"
-                                checked={form.burySiblings}
-                                onChange={(event) =>
-                                    setForm((current) => ({ ...current, burySiblings: event.currentTarget.checked }))
-                                }
+                                checked={form.buryNew}
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, buryNew: checked }));
+                                }}
                             />
-                            Bury siblings
+                            Bury new siblings
+                        </label>
+                        <label className="inline-flex items-center gap-2 text-slate-200">
+                            <input
+                                type="checkbox"
+                                checked={form.buryReviews}
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, buryReviews: checked }));
+                                }}
+                            />
+                            Bury review siblings
+                        </label>
+                        <label className="inline-flex items-center gap-2 text-slate-200">
+                            <input
+                                type="checkbox"
+                                checked={form.buryInterdayLearning}
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, buryInterdayLearning: checked }));
+                                }}
+                            />
+                            Bury interday learning siblings
+                        </label>
+                        <label className="inline-flex items-center gap-2 text-slate-200">
+                            <input
+                                type="checkbox"
+                                checked={form.newCardsIgnoreReviewLimit}
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, newCardsIgnoreReviewLimit: checked }));
+                                }}
+                            />
+                            New cards ignore review limit (global)
+                        </label>
+                        <label className="inline-flex items-center gap-2 text-slate-200">
+                            <input
+                                type="checkbox"
+                                checked={form.applyAllParentLimits}
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, applyAllParentLimits: checked }));
+                                }}
+                            />
+                            Apply all parent limits (global)
                         </label>
                         <label className="inline-flex items-center gap-2 text-slate-200">
                             <input
                                 type="checkbox"
                                 checked={form.enableFuzz}
-                                onChange={(event) =>
-                                    setForm((current) => ({ ...current, enableFuzz: event.currentTarget.checked }))
-                                }
+                                onChange={(event) => {
+                                    const checked = event.currentTarget.checked;
+                                    setForm((current) => ({ ...current, enableFuzz: checked }));
+                                }}
                             />
                             Interval fuzzing
                         </label>
@@ -334,8 +447,9 @@ export default function DeckOptionsPage() {
                     <dl className="mt-3 grid grid-cols-2 gap-2">
                         <Info label="Reviews" value={optimization.reviewCount} />
                         <Info label="Recall rate" value={`${(optimization.recallRate * 100).toFixed(1)}%`} />
-                        <Info label="Suggested retention" value={optimization.requestRetention.toFixed(3)} />
-                        <Info label="Suggested max interval" value={`${optimization.maximumInterval}d`} />
+                        <Info label="Target retention" value={optimization.requestRetention.toFixed(3)} />
+                        <Info label="Target max interval" value={`${optimization.maximumInterval}d`} />
+                        <Info label="Optimized weights" value={optimization.weights.length} />
                     </dl>
                 </section>
             ) : null}
@@ -343,10 +457,40 @@ export default function DeckOptionsPage() {
     );
 }
 
-function resolveDeckOptionForm(config: Record<string, unknown> | null): DeckOptionForm {
+function resolveDeckOptionForm(
+    config: Record<string, unknown> | null,
+    globalConfig: Record<string, unknown> | null,
+): DeckOptionForm {
     if (!config) {
-        return DEFAULT_FORM;
+        return {
+            ...DEFAULT_FORM,
+            newCardsIgnoreReviewLimit: firstBoolean(
+                globalConfig?.newCardsIgnoreReviewLimit,
+                globalConfig?.new_cards_ignore_review_limit,
+                DEFAULT_FORM.newCardsIgnoreReviewLimit,
+            ),
+            applyAllParentLimits: firstBoolean(
+                globalConfig?.applyAllParentLimits,
+                globalConfig?.apply_all_parent_limits,
+                DEFAULT_FORM.applyAllParentLimits,
+            ),
+        };
     }
+
+    const explicitBury = firstBoolean(config.burySiblings, config.bury);
+    const buryNew = firstBoolean(config.buryNew, getNestedBoolean(config.new, "bury"), explicitBury, DEFAULT_FORM.buryNew);
+    const buryReviews = firstBoolean(
+        config.buryReviews,
+        getNestedBoolean(config.rev, "bury"),
+        explicitBury,
+        DEFAULT_FORM.buryReviews,
+    );
+    const buryInterdayLearning = firstBoolean(
+        config.buryInterdayLearning,
+        config.bury_interday_learning,
+        explicitBury,
+        DEFAULT_FORM.buryInterdayLearning,
+    );
 
     return {
         newPerDay: firstNumber(config.newPerDay, getNestedNumber(config.new, "perDay"), DEFAULT_FORM.newPerDay),
@@ -361,13 +505,30 @@ function resolveDeckOptionForm(config: Record<string, unknown> | null): DeckOpti
             firstArray(config.relearningSteps),
             firstArray(getNestedValue(config.lapse, "delays")),
         ),
-        requestRetention: firstNumber(config.requestRetention, DEFAULT_FORM.requestRetention),
+        requestRetention: normalizeRequestRetention(firstNumber(config.requestRetention, DEFAULT_FORM.requestRetention)),
         maximumInterval: firstNumber(
             config.maximumInterval,
             getNestedNumber(config.rev, "maxIvl"),
             DEFAULT_FORM.maximumInterval,
         ),
-        burySiblings: firstBoolean(config.burySiblings, DEFAULT_FORM.burySiblings),
+        fsrsWeights: firstNumericArray(config.fsrsWeights, DEFAULT_FORM.fsrsWeights),
+        buryNew,
+        buryReviews,
+        buryInterdayLearning,
+        leechAction: normalizeLeechAction(
+            firstKnown(config.leechAction, getNestedValue(config.lapse, "leechAction")),
+            DEFAULT_FORM.leechAction,
+        ),
+        newCardsIgnoreReviewLimit: firstBoolean(
+            globalConfig?.newCardsIgnoreReviewLimit,
+            globalConfig?.new_cards_ignore_review_limit,
+            DEFAULT_FORM.newCardsIgnoreReviewLimit,
+        ),
+        applyAllParentLimits: firstBoolean(
+            globalConfig?.applyAllParentLimits,
+            globalConfig?.apply_all_parent_limits,
+            DEFAULT_FORM.applyAllParentLimits,
+        ),
         enableFuzz: firstBoolean(config.enableFuzz, DEFAULT_FORM.enableFuzz),
     };
 }
@@ -437,8 +598,35 @@ function firstBoolean(...values: unknown[]): boolean {
     return false;
 }
 
+function firstNumericArray(...values: unknown[]): number[] {
+    for (const value of values) {
+        if (!Array.isArray(value)) {
+            continue;
+        }
+
+        const normalized = value
+            .filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
+
+        if (normalized.length > 0) {
+            return normalized;
+        }
+    }
+
+    return [];
+}
+
 function firstArray(value: unknown): unknown[] | null {
     return Array.isArray(value) ? value : null;
+}
+
+function firstKnown(...values: unknown[]): unknown {
+    for (const value of values) {
+        if (value !== undefined && value !== null) {
+            return value;
+        }
+    }
+
+    return undefined;
 }
 
 function getNestedValue(value: unknown, key: string): unknown {
@@ -451,6 +639,63 @@ function getNestedValue(value: unknown, key: string): unknown {
 function getNestedNumber(value: unknown, key: string): number | undefined {
     const candidate = getNestedValue(value, key);
     return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+}
+
+function getNestedBoolean(value: unknown, key: string): boolean | undefined {
+    const candidate = getNestedValue(value, key);
+    return typeof candidate === "boolean" ? candidate : undefined;
+}
+
+function normalizeLeechAction(value: unknown, fallback: DeckOptionForm["leechAction"]): DeckOptionForm["leechAction"] {
+    if (value === "suspend" || value === "tag-only") {
+        return value;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.trunc(value) === 0 ? "suspend" : "tag-only";
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "0" || normalized === "suspend") {
+            return "suspend";
+        }
+        if (normalized === "1" || normalized === "tag" || normalized === "tag-only" || normalized === "tag_only") {
+            return "tag-only";
+        }
+    }
+
+    return fallback;
+}
+
+function normalizeRequestRetention(value: number): number {
+    const clamped = clampNumber(value, DESIRED_RETENTION_MIN, DESIRED_RETENTION_MAX);
+    return roundToStep(clamped, DESIRED_RETENTION_STEP);
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+    if (!Number.isFinite(value)) {
+        return min;
+    }
+    if (value < min) {
+        return min;
+    }
+    if (value > max) {
+        return max;
+    }
+    return value;
+}
+
+function roundToStep(value: number, step: number): number {
+    if (!Number.isFinite(step) || step <= 0) {
+        return value;
+    }
+
+    const rounded = Math.round(value / step) * step;
+    const decimalPart = String(step).split(".")[1];
+    const decimals = decimalPart ? decimalPart.length : 0;
+
+    return Number.parseFloat(rounded.toFixed(decimals));
 }
 
 function NumberField({

@@ -6,6 +6,7 @@ import { CardTable } from "@/components/browser/CardTable";
 import { SearchBar } from "@/components/browser/SearchBar";
 import { useDecks } from "@/hooks/use-decks";
 import { queueToLabel, useSearch, type SearchSortField } from "@/hooks/use-search";
+import { formatBrowserDueValue, formatBrowserIntervalValue } from "@/lib/scheduler/timespan";
 
 export interface CardBrowserProps {
     readonly initialQuery?: string;
@@ -328,8 +329,8 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
                                 <Info label="Deck" value={focusedCard.deckName} />
                                 <Info label="Notetype" value={focusedCard.noteTypeName} />
                                 <Info label="Queue" value={queueToLabel(focusedCard.queue)} />
-                                <Info label="Due" value={focusedCard.due} />
-                                <Info label="Interval" value={`${focusedCard.ivl}d`} />
+                                <Info label="Due" value={formatBrowserDueValue(focusedCard)} />
+                                <Info label="Interval" value={formatBrowserIntervalValue(focusedCard)} />
                                 <Info label="Reps" value={focusedCard.reps} />
                                 <Info label="Lapses" value={focusedCard.lapses} />
                                 <Info label="Factor" value={focusedCard.factor} />

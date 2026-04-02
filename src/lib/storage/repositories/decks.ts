@@ -34,7 +34,7 @@ export class DecksRepository {
     public async create(name: string, partial: Partial<DeckRecord> = {}): Promise<DeckRecord> {
         const deckMap = await this.getDeckMap();
         const now = Date.now();
-        const deckId = partial.id ?? now;
+        const deckId = this.resolveNextDeckId(deckMap, partial.id, now);
 
         const deck: DeckRecord = {
             id: deckId,
@@ -54,6 +54,24 @@ export class DecksRepository {
         await this.saveDeckMap(deckMap);
 
         return deck;
+    }
+
+    private resolveNextDeckId(
+        deckMap: Record<string, DeckRecord>,
+        preferredId: number | undefined,
+        fallbackId: number,
+    ): number {
+        const seed =
+            typeof preferredId === "number" && Number.isFinite(preferredId)
+                ? Math.max(1, Math.trunc(preferredId))
+                : Math.max(1, Math.trunc(fallbackId));
+
+        let candidate = seed;
+        while (deckMap[String(candidate)]) {
+            candidate += 1;
+        }
+
+        return candidate;
     }
 
     public async update(deckId: number, patch: Partial<DeckRecord>): Promise<void> {

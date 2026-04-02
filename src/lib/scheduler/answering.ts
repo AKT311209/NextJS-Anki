@@ -1,4 +1,5 @@
 import { SchedulerEngine } from "@/lib/scheduler/engine";
+import { resolveSchedulerConfig } from "@/lib/scheduler/params";
 import { burySiblingCards } from "@/lib/scheduler/burying";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository } from "@/lib/storage/repositories/cards";
@@ -23,15 +24,30 @@ export class SchedulerAnsweringService {
     }
 
     public async answerCard(input: AnswerCardInput): Promise<PersistedAnswerCardResult> {
-        const result = this.engine.answerCard(input);
+        const config = resolveSchedulerConfig(input.config);
+        const result = await this.engine.answerCard({
+            ...input,
+            config,
+        });
         await this.persistResult(result);
 
         let buriedSiblingCardIds: number[] = [];
-        if (input.config.burySiblings) {
+        const shouldBurySiblings =
+            config.burySiblings ||
+            config.buryNew ||
+            config.buryReviews ||
+            config.buryInterdayLearning;
+
+        if (shouldBurySiblings) {
             buriedSiblingCardIds = await burySiblingCards(this.connection, {
                 card: result.nextCard,
                 mode: "scheduler",
                 restrictToDeckId: result.nextCard.did,
+                buryMode: {
+                    buryNew: config.buryNew,
+                    buryReviews: config.buryReviews,
+                    buryInterdayLearning: config.buryInterdayLearning,
+                },
             });
         }
 

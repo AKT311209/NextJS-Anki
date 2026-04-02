@@ -28,6 +28,12 @@ export interface DeckSchedulingConfig {
     readonly desiredRetention?: number;
     readonly maximumInterval?: number;
     readonly burySiblings?: boolean;
+    readonly buryNew?: boolean;
+    readonly buryReviews?: boolean;
+    readonly buryInterdayLearning?: boolean;
+    readonly leechAction?: "tag-only" | "suspend";
+    readonly newCardsIgnoreReviewLimit?: boolean;
+    readonly applyAllParentLimits?: boolean;
     readonly leechThreshold?: number;
     readonly fsrsWeights?: readonly number[];
 }

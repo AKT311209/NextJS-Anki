@@ -1,0 +1,287 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { computeStatsSnapshot } from "@/hooks/use-stats";
+import { ensureCollectionBootstrap } from "@/lib/storage/bootstrap";
+import { CollectionDatabaseManager, type CollectionDatabaseConnection } from "@/lib/storage/database";
+import { CardsRepository } from "@/lib/storage/repositories/cards";
+import { ConfigRepository } from "@/lib/storage/repositories/config";
+import { DecksRepository } from "@/lib/storage/repositories/decks";
+import { NotesRepository } from "@/lib/storage/repositories/notes";
+import { RevlogRepository } from "@/lib/storage/repositories/revlog";
+
+describe("Phase 7 statistics", () => {
+    let manager: CollectionDatabaseManager;
+    let connection: CollectionDatabaseConnection;
+
+    beforeEach(async () => {
+        manager = new CollectionDatabaseManager({
+            persistenceMode: "memory",
+            preferOpfs: false,
+            autoSaveDebounceMs: 1,
+        });
+
+        await manager.initialize();
+        connection = await manager.getConnection();
+
+        await ensureCollectionBootstrap(connection);
+    });
+
+    afterEach(async () => {
+        await manager.close();
+    });
+
+    it("computes overview, trends, and forecast from collection data", async () => {
+        const now = new Date("2026-04-02T12:00:00.000Z");
+        const dayNumber = Math.floor(now.getTime() / (24 * 60 * 60 * 1000));
+        const dayStart = new Date(now.getTime());
+        dayStart.setHours(0, 0, 0, 0);
+
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+        const revlog = new RevlogRepository(connection);
+
+        const childDeck = await decks.create("Default::Child", {
+            id: 2002,
+            conf: 2,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 1001,
+            cardId: 5001,
+            deckId: 1,
+            queue: 2,
+            type: 2,
+            due: dayNumber,
+            ivl: 30,
+            factor: 2500,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 1002,
+            cardId: 5002,
+            deckId: 1,
+            queue: 1,
+            type: 1,
+            due: now.getTime() - 5 * 60 * 1000,
+            ivl: 0,
+            factor: 2000,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 1003,
+            cardId: 5003,
+            deckId: childDeck.id,
+            queue: 0,
+            type: 0,
+            due: 0,
+            ivl: 0,
+            factor: 0,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 1004,
+            cardId: 5004,
+            deckId: childDeck.id,
+            queue: 2,
+            type: 2,
+            due: dayNumber + 3,
+            ivl: 5,
+            factor: 1800,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 1005,
+            cardId: 5005,
+            deckId: 1,
+            queue: -1,
+            type: 2,
+            due: dayNumber,
+            ivl: 50,
+            factor: 2300,
+        });
+
+        await revlog.insert({
+            id: dayStart.getTime() + 2 * 60 * 60 * 1000,
+            cid: 5001,
+            ease: 3,
+            ivl: 30,
+            lastIvl: 15,
+            factor: 2500,
+            time: 12_000,
+            type: 1,
+        });
+
+        await revlog.insert({
+            id: dayStart.getTime() + 4 * 60 * 60 * 1000,
+            cid: 5004,
+            ease: 4,
+            ivl: 5,
+            lastIvl: 2,
+            factor: 1900,
+            time: 9_000,
+            type: 1,
+        });
+
+        await revlog.insert({
+            id: dayStart.getTime() + 6 * 60 * 60 * 1000,
+            cid: 5002,
+            ease: 2,
+            ivl: 1,
+            lastIvl: 0,
+            factor: 2000,
+            time: 14_000,
+            type: 0,
+        });
+
+        await revlog.insert({
+            id: dayStart.getTime() - 6 * 60 * 60 * 1000,
+            cid: 5001,
+            ease: 1,
+            ivl: 1,
+            lastIvl: 0,
+            factor: 2200,
+            time: 10_000,
+            type: 0,
+        });
+
+        const snapshot = await computeStatsSnapshot(connection, {
+            now,
+            selectedDeckId: null,
+        });
+
+        expect(snapshot.overview.totalCards).toBe(5);
+        expect(snapshot.overview.totalNotes).toBe(5);
+        expect(snapshot.overview.totalReviews).toBe(4);
+
+        expect(snapshot.overview.reviewsToday).toBe(3);
+        expect(snapshot.overview.correctRateToday).toBeCloseTo(1, 4);
+        expect(snapshot.overview.dueToday).toBe(3);
+
+        expect(snapshot.overview.stateCounts.new).toBe(1);
+        expect(snapshot.overview.stateCounts.learning).toBe(1);
+        expect(snapshot.overview.stateCounts.review).toBe(3);
+        expect(snapshot.overview.stateCounts.suspended).toBe(1);
+
+        expect(snapshot.reviewHeatmap.length).toBeGreaterThan(300);
+        expect(snapshot.retention.length).toBeLessThanOrEqual(30);
+
+        const todayForecast = snapshot.forecast.find((entry) => entry.dayOffset === 0);
+        expect(todayForecast?.newCards).toBe(1);
+
+        const dayThreeForecast = snapshot.forecast.find((entry) => entry.dayOffset === 3);
+        expect(dayThreeForecast?.review).toBe(1);
+
+        expect(snapshot.intervalDistribution.some((entry) => entry.count > 0)).toBe(true);
+        expect(snapshot.easeDistribution.some((entry) => entry.count > 0)).toBe(true);
+        expect(snapshot.hourlyDistribution).toHaveLength(24);
+
+        expect(snapshot.deckRetention.some((entry) => entry.deckId === 1)).toBe(true);
+        expect(snapshot.deckRetention.some((entry) => entry.deckId === childDeck.id)).toBe(true);
+        expect(snapshot.deckForecast.some((entry) => entry.deckId === childDeck.id)).toBe(true);
+    });
+
+    it("scopes statistics to selected deck and exposes fsrs config", async () => {
+        const now = new Date("2026-04-02T12:00:00.000Z");
+
+        const decks = new DecksRepository(connection);
+        const config = new ConfigRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const childDeck = await decks.create("Default::Scoped", {
+            id: 3002,
+            conf: 2,
+        });
+
+        await config.updateDeckConfig(2, {
+            requestRetention: 0.93,
+            maximumInterval: 6000,
+            learningSteps: ["1m", "15m"],
+            relearningSteps: ["10m"],
+            newPerDay: 30,
+            reviewsPerDay: 250,
+            learningPerDay: 100,
+            enableFuzz: false,
+            burySiblings: true,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 2001,
+            cardId: 7001,
+            deckId: 1,
+            queue: 0,
+            type: 0,
+            due: 0,
+            ivl: 0,
+            factor: 0,
+        });
+
+        await insertNoteAndCard(notes, cards, {
+            noteId: 2002,
+            cardId: 7002,
+            deckId: childDeck.id,
+            queue: 2,
+            type: 2,
+            due: Math.floor(now.getTime() / (24 * 60 * 60 * 1000)),
+            ivl: 15,
+            factor: 2300,
+        });
+
+        const snapshot = await computeStatsSnapshot(connection, {
+            now,
+            selectedDeckId: childDeck.id,
+        });
+
+        expect(snapshot.scope.selectedDeckId).toBe(childDeck.id);
+        expect(snapshot.overview.totalCards).toBe(1);
+        expect(snapshot.overview.stateCounts.review).toBe(1);
+        expect(snapshot.overview.stateCounts.new).toBe(0);
+
+        expect(snapshot.fsrs).not.toBeNull();
+        expect(snapshot.fsrs?.deckId).toBe(childDeck.id);
+        expect(snapshot.fsrs?.requestRetention).toBeCloseTo(0.93, 6);
+        expect(snapshot.fsrs?.maximumInterval).toBe(6000);
+        expect(snapshot.fsrs?.newPerDay).toBe(30);
+        expect(snapshot.fsrs?.reviewsPerDay).toBe(250);
+        expect(snapshot.fsrs?.learningPerDay).toBe(100);
+        expect(snapshot.fsrs?.enableFuzz).toBe(false);
+        expect(snapshot.fsrs?.burySiblings).toBe(true);
+        expect(snapshot.fsrs?.learningSteps).toEqual(["1m", "15m"]);
+        expect(snapshot.fsrs?.relearningSteps).toEqual(["10m"]);
+    });
+});
+
+async function insertNoteAndCard(
+    notes: NotesRepository,
+    cards: CardsRepository,
+    input: {
+        readonly noteId: number;
+        readonly cardId: number;
+        readonly deckId: number;
+        readonly queue: number;
+        readonly type: number;
+        readonly due: number;
+        readonly ivl: number;
+        readonly factor: number;
+    },
+): Promise<void> {
+    await notes.create({
+        id: input.noteId,
+        guid: `note-${input.noteId}`,
+        mid: 100001,
+        tags: "phase7",
+        fields: [`Front ${input.noteId}`, `Back ${input.noteId}`],
+    });
+
+    await cards.create({
+        id: input.cardId,
+        nid: input.noteId,
+        did: input.deckId,
+        ord: 0,
+        queue: input.queue,
+        type: input.type,
+        due: input.due,
+        ivl: input.ivl,
+        factor: input.factor,
+    });
+}

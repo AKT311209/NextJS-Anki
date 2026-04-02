@@ -16,9 +16,9 @@ const engine = new SchedulerEngine();
 
 const schedulerWorkerApi = {
     ping: () => "scheduler-worker-ready",
-    previewCard: (card: Card, config: Partial<SchedulerConfig> = {}, now?: string | number | Date) =>
+    previewCard: async (card: Card, config: Partial<SchedulerConfig> = {}, now?: string | number | Date) =>
         engine.previewCard(card, config, toDate(now)),
-    answerCard: (input: WorkerAnswerInput) => {
+    answerCard: async (input: WorkerAnswerInput) => {
         const config = resolveSchedulerConfig(input.config);
         return engine.answerCard({
             card: input.card,
@@ -28,17 +28,19 @@ const schedulerWorkerApi = {
             answerMillis: input.answerMillis ?? 0,
         });
     },
-    answerBatch: (inputs: readonly WorkerAnswerInput[]) => {
-        return inputs.map((input) => {
+    answerBatch: async (inputs: readonly WorkerAnswerInput[]) => {
+        const results = [];
+        for (const input of inputs) {
             const config = resolveSchedulerConfig(input.config);
-            return engine.answerCard({
+            results.push(await engine.answerCard({
                 card: input.card,
                 rating: input.rating,
                 config,
                 now: toDate(input.now),
                 answerMillis: input.answerMillis ?? 0,
-            });
-        });
+            }));
+        }
+        return results;
     },
     optimizeParameters: (
         reviews: readonly RevlogOptimizationSample[],

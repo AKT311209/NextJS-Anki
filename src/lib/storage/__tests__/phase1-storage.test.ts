@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ensureCollectionBootstrap } from "@/lib/storage/bootstrap";
 import { CollectionDatabaseManager, type CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository } from "@/lib/storage/repositories/cards";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
@@ -211,5 +212,33 @@ describe("Phase 1 storage layer", () => {
         expect(remainingDeck).toBeNull();
         expect(Number(deckCardCount?.count ?? 0)).toBe(0);
         expect(Number(revlogCount?.count ?? 0)).toBe(0);
+    });
+
+    it("preserves deck config overrides across bootstrap reruns", async () => {
+        const config = new ConfigRepository(connection);
+
+        await ensureCollectionBootstrap(connection);
+
+        await config.updateDeckConfig(1, {
+            newPerDay: 77,
+            reviewsPerDay: 333,
+            requestRetention: 0.95,
+            rev: {
+                perDay: 333,
+                maxIvl: 12000,
+            },
+        });
+
+        await ensureCollectionBootstrap(connection);
+
+        const persisted = await config.getDeckConfig(1);
+        expect(persisted).not.toBeNull();
+        expect(persisted?.newPerDay).toBe(77);
+        expect(persisted?.reviewsPerDay).toBe(333);
+        expect(persisted?.requestRetention).toBe(0.95);
+
+        const rev = persisted?.rev as Record<string, unknown> | undefined;
+        expect(rev?.perDay).toBe(333);
+        expect(rev?.maxIvl).toBe(12000);
     });
 });

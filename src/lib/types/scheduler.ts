@@ -5,6 +5,8 @@ export type ReviewRating = "again" | "hard" | "good" | "easy";
 
 export type SchedulerReviewMix = "mix-with-reviews" | "after-reviews" | "before-reviews";
 
+export type SchedulerLeechAction = "tag-only" | "suspend";
+
 export const REVIEW_RATINGS: readonly ReviewRating[] = ["again", "hard", "good", "easy"] as const;
 
 export interface SchedulerLimits {
@@ -41,9 +43,15 @@ export interface SchedulerConfig {
     readonly easyInterval: number;
     readonly startingEase: number;
     readonly leechThreshold: number;
+    readonly leechAction: SchedulerLeechAction;
     readonly burySiblings: boolean;
+    readonly buryNew: boolean;
+    readonly buryReviews: boolean;
+    readonly buryInterdayLearning: boolean;
     readonly newReviewMix: SchedulerReviewMix;
     readonly interdayLearningMix: SchedulerReviewMix;
+    readonly newCardsIgnoreReviewLimit: boolean;
+    readonly applyAllParentLimits: boolean;
     readonly learnAheadSeconds: number;
     readonly limits: SchedulerLimits;
     readonly fsrsWeights?: readonly number[];
@@ -66,9 +74,15 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     easyInterval: 4,
     startingEase: 2500,
     leechThreshold: 8,
-    burySiblings: true,
+    leechAction: "tag-only",
+    burySiblings: false,
+    buryNew: false,
+    buryReviews: false,
+    buryInterdayLearning: false,
     newReviewMix: "mix-with-reviews",
     interdayLearningMix: "mix-with-reviews",
+    newCardsIgnoreReviewLimit: false,
+    applyAllParentLimits: false,
     learnAheadSeconds: 1200,
     limits: {
         newPerDay: 20,

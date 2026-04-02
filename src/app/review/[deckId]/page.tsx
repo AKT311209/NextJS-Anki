@@ -127,8 +127,24 @@ export default function ReviewPage() {
                 <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-8 text-center">
                     <h2 className="text-xl font-semibold text-slate-100">All done for now 🎉</h2>
                     <p className="mt-2 text-sm text-slate-400">
-                        No due cards in this queue. Come back later or add more cards in upcoming phases.
+                        No cards are currently due right now.
                     </p>
+
+                    <dl className="mx-auto mt-4 grid max-w-md gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-4 py-3 text-left text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                            <dt className="text-slate-400">Still due today</dt>
+                            <dd className="font-semibold text-slate-100">{review.dueLaterToday}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                            <dt className="text-slate-400">Next card</dt>
+                            <dd className="font-semibold text-slate-100">
+                                {review.nextCardDueInMinutes === null
+                                    ? "No more cards due today"
+                                    : `In ${formatMinutes(review.nextCardDueInMinutes)}`}
+                            </dd>
+                        </div>
+                    </dl>
+
                     <div className="mt-4 flex justify-center gap-2">
                         <button
                             type="button"
@@ -150,6 +166,14 @@ export default function ReviewPage() {
             ) : null}
         </main>
     );
+}
+
+function formatMinutes(minutes: number): string {
+    if (minutes === 1) {
+        return "1 minute";
+    }
+
+    return `${minutes} minutes`;
 }
 
 function parseDeckId(raw: string | undefined): number | null {

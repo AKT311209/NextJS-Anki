@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCollection } from "@/hooks/use-collection";
 import { renderCardTemplatesAsync } from "@/lib/rendering/template-renderer";
 import { SchedulerAnsweringService } from "@/lib/scheduler/answering";
 import { SchedulerEngine } from "@/lib/scheduler/engine";
 import { resolveSchedulerConfig } from "@/lib/scheduler/params";
 import { SchedulerQueueBuilder } from "@/lib/scheduler/queue";
-import { toDayNumber } from "@/lib/scheduler/states";
+import { fromDayNumber, toDayNumber } from "@/lib/scheduler/states";
+import { formatAnkiAnswerButtonInterval } from "@/lib/scheduler/timespan";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository, type CardRecord } from "@/lib/storage/repositories/cards";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
@@ -46,12 +47,29 @@ export interface UseReviewResult {
         readonly review: number;
         readonly new: number;
     };
+    readonly dueLaterToday: number;
+    readonly nextCardDueInMinutes: number | null;
     readonly canUndo: boolean;
     readonly revealAnswer: () => void;
     readonly answer: (rating: ReviewRating) => Promise<void>;
     readonly undo: () => Promise<void>;
     readonly reload: () => Promise<void>;
 }
+
+interface ReviewCompletionState {
+    readonly dueLaterToday: number;
+    readonly nextCardDueInMinutes: number | null;
+}
+
+interface ReviewCompletionRow {
+    readonly dueLaterToday: number;
+    readonly nextDueAtMs: number | null;
+}
+
+const EMPTY_REVIEW_COMPLETION_STATE: ReviewCompletionState = {
+    dueLaterToday: 0,
+    nextCardDueInMinutes: null,
+};
 
 const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
 const REVIEW_NEW_SCOPE_STORAGE_PREFIX = "nextjs-anki:review:new-scope:v1";
@@ -92,6 +110,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const applyUndo = useReviewStore((state) => state.applyUndo);
     const setError = useReviewStore((state) => state.setError);
     const reset = useReviewStore((state) => state.reset);
+    const [completionState, setCompletionState] = useState<ReviewCompletionState>(EMPTY_REVIEW_COMPLETION_STATE);
 
     const initializeSession = useCallback(async () => {
         if (!collection.connection || !collection.ready) {
@@ -99,6 +118,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
         }
 
         startLoading(options.deckId);
+        setCompletionState(EMPTY_REVIEW_COMPLETION_STATE);
         const now = nowProvider();
         const scopeKey = buildReviewScopeKey(options.deckId, toDayNumber(now));
 
@@ -116,6 +136,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 config,
                 allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
+            const latestCompletion = await loadReviewCompletionState(collection.connection, options.deckId, now);
 
             if (sessionNewCardIdsRef.current === null) {
                 const scopedNewIds = new Set(
@@ -146,6 +167,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 queueResult,
                 currentCard: nextCard,
             });
+            setCompletionState(latestCompletion);
 
             shownAtMsRef.current = now.getTime();
         } catch (cause) {
@@ -192,6 +214,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     config: state.config,
                     allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
                 });
+                const latestCompletion = await loadReviewCompletionState(connection, state.deckId, now);
 
                 const nextCard = await buildActiveReviewCard(
                     connection,
@@ -214,6 +237,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                         answeredAt: now.getTime(),
                     },
                 });
+                setCompletionState(latestCompletion);
 
                 shownAtMsRef.current = now.getTime();
             } catch (cause) {
@@ -247,6 +271,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 config: state.config,
                 allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
+            const latestCompletion = await loadReviewCompletionState(connection, state.deckId, now);
 
             const restoredCurrent = await buildActiveReviewCard(
                 connection,
@@ -260,6 +285,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 queueResult,
                 currentCard: restoredCurrent,
             });
+            setCompletionState(latestCompletion);
 
             shownAtMsRef.current = now.getTime();
         } catch (cause) {
@@ -279,9 +305,18 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             return;
         }
 
-        void initializeSession();
+        let disposed = false;
+
+        queueMicrotask(() => {
+            if (disposed) {
+                return;
+            }
+
+            void initializeSession();
+        });
 
         return () => {
+            disposed = true;
             reset();
         };
     }, [collection.connection, collection.ready, initializeSession, reset]);
@@ -306,6 +341,8 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             remaining: queue.length,
             total: answered + queue.length,
             counts,
+            dueLaterToday: completionState.dueLaterToday,
+            nextCardDueInMinutes: completionState.nextCardDueInMinutes,
             canUndo: history.length > 0,
             revealAnswer,
             answer,
@@ -319,6 +356,8 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             collection.loading,
             collection.ready,
             counts,
+            completionState.dueLaterToday,
+            completionState.nextCardDueInMinutes,
             currentCard,
             history.length,
             initializeSession,
@@ -329,6 +368,56 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             undo,
         ],
     );
+}
+
+async function loadReviewCompletionState(
+    connection: CollectionDatabaseConnection,
+    deckId: number | null,
+    now: Date,
+): Promise<ReviewCompletionState> {
+    const nowMs = now.getTime();
+    const nextDayStartMs = fromDayNumber(toDayNumber(now) + 1).getTime();
+
+    const row = deckId === null
+        ? await connection.get<ReviewCompletionRow>(
+            `
+            SELECT
+                COUNT(*) AS dueLaterToday,
+                MIN(due) AS nextDueAtMs
+            FROM cards
+            WHERE queue = ?
+              AND due > ?
+              AND due < ?
+            `,
+            [CardQueue.Learning, nowMs, nextDayStartMs],
+        )
+        : await connection.get<ReviewCompletionRow>(
+            `
+            SELECT
+                COUNT(*) AS dueLaterToday,
+                MIN(due) AS nextDueAtMs
+            FROM cards
+            WHERE queue = ?
+              AND did = ?
+              AND due > ?
+              AND due < ?
+            `,
+            [CardQueue.Learning, deckId, nowMs, nextDayStartMs],
+        );
+
+    const dueLaterToday = Math.max(0, Math.trunc(firstNumber(row?.dueLaterToday) ?? 0));
+    const nextDueAtMs = firstNumber(row?.nextDueAtMs);
+
+    if (dueLaterToday <= 0 || nextDueAtMs === undefined) {
+        return EMPTY_REVIEW_COMPLETION_STATE;
+    }
+
+    const nextCardDueInMinutes = Math.max(1, Math.ceil(Math.max(0, nextDueAtMs - nowMs) / 60_000));
+
+    return {
+        dueLaterToday,
+        nextCardDueInMinutes,
+    };
 }
 
 async function loadSchedulerConfig(
@@ -383,8 +472,8 @@ async function buildActiveReviewCard(
         renderMath: true,
     });
 
-    const preview = engine.previewCard(card, config, now);
-    const intervalLabels = buildIntervalLabels(preview, now);
+    const preview = await engine.previewCard(card, config, now);
+    const intervalLabels = buildIntervalLabels(preview, now, config);
 
     return {
         card,
@@ -422,53 +511,31 @@ async function restoreCardStatesForUndo(
     });
 }
 
-function buildIntervalLabels(preview: SchedulerPreview, now: Date): Record<ReviewRating, string> {
+function buildIntervalLabels(
+    preview: SchedulerPreview,
+    now: Date,
+    config: SchedulerConfig,
+): Record<ReviewRating, string> {
     return {
-        again: formatTransitionInterval(preview.again, now),
-        hard: formatTransitionInterval(preview.hard, now),
-        good: formatTransitionInterval(preview.good, now),
-        easy: formatTransitionInterval(preview.easy, now),
+        again: formatTransitionInterval(preview.again, now, config),
+        hard: formatTransitionInterval(preview.hard, now, config),
+        good: formatTransitionInterval(preview.good, now, config),
+        easy: formatTransitionInterval(preview.easy, now, config),
     };
 }
 
 function formatTransitionInterval(
     transition: SchedulerPreview[ReviewRating],
     now: Date,
+    config: SchedulerConfig,
 ): string {
-    if (
+    const seconds =
         transition.nextCard.queue === CardQueue.Learning ||
-        transition.nextCard.queue === CardQueue.DayLearning
-    ) {
-        const minutes = Math.max(0, Math.ceil((transition.due.getTime() - now.getTime()) / 60_000));
-        if (minutes < 1) {
-            return "<1m";
-        }
-        if (minutes < 60) {
-            return `<${minutes}m`;
-        }
+            transition.nextCard.queue === CardQueue.DayLearning
+            ? (transition.due.getTime() - now.getTime()) / 1000
+            : transition.scheduledDays * 24 * 60 * 60;
 
-        const hours = Math.ceil(minutes / 60);
-        if (hours < 24) {
-            return `<${hours}h`;
-        }
-
-        const days = Math.ceil(hours / 24);
-        return `<${days}d`;
-    }
-
-    if (transition.scheduledDays <= 1) {
-        return "<1d";
-    }
-
-    if (transition.scheduledDays < 30) {
-        return `${transition.scheduledDays}d`;
-    }
-
-    if (transition.scheduledDays < 365) {
-        return `${Math.round(transition.scheduledDays / 30)}mo`;
-    }
-
-    return `${Math.round(transition.scheduledDays / 365)}y`;
+    return formatAnkiAnswerButtonInterval(seconds, config.learnAheadSeconds);
 }
 
 function extractNotetypeFieldNames(rawFields: unknown[] | undefined): string[] {
@@ -623,12 +690,29 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
 
     const fsrsWeights = normalizeNumericArray(record.fsrsWeights);
 
-    const burySiblings = resolveBurySiblings(record);
+    const bury = resolveBuryOptions(record);
+    const leechAction = normalizeLeechAction(
+        firstKnown(record.leechAction, getNestedValue(record.lapse, "leechAction")),
+    );
+    const newCardsIgnoreReviewLimit = firstBoolean(
+        record.newCardsIgnoreReviewLimit,
+        record.new_cards_ignore_review_limit,
+    );
+    const applyAllParentLimits = firstBoolean(
+        record.applyAllParentLimits,
+        record.apply_all_parent_limits,
+    );
 
     return {
         requestRetention: firstNumber(record.requestRetention, record.desiredRetention),
         maximumInterval: firstNumber(record.maximumInterval, record.maxInterval, getNestedNumber(record.rev, "maxIvl")),
-        burySiblings,
+        ...(leechAction !== undefined ? { leechAction } : {}),
+        ...(bury.burySiblings !== undefined ? { burySiblings: bury.burySiblings } : {}),
+        ...(bury.buryNew !== undefined ? { buryNew: bury.buryNew } : {}),
+        ...(bury.buryReviews !== undefined ? { buryReviews: bury.buryReviews } : {}),
+        ...(bury.buryInterdayLearning !== undefined ? { buryInterdayLearning: bury.buryInterdayLearning } : {}),
+        ...(newCardsIgnoreReviewLimit !== undefined ? { newCardsIgnoreReviewLimit } : {}),
+        ...(applyAllParentLimits !== undefined ? { applyAllParentLimits } : {}),
         leechThreshold: firstNumber(record.leechThreshold, record.leechFails),
         fsrsWeights,
         limits: {
@@ -644,23 +728,54 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
     };
 }
 
-function resolveBurySiblings(record: Record<string, unknown>): boolean | undefined {
+function resolveBuryOptions(record: Record<string, unknown>): {
+    readonly burySiblings?: boolean;
+    readonly buryNew?: boolean;
+    readonly buryReviews?: boolean;
+    readonly buryInterdayLearning?: boolean;
+} {
     const explicit = firstBoolean(record.burySiblings, record.bury);
-    if (explicit !== undefined) {
-        return explicit;
+    const buryNew = firstBoolean(record.buryNew, getNestedBoolean(record.new, "bury"), explicit);
+    const buryReviews = firstBoolean(record.buryReviews, getNestedBoolean(record.rev, "bury"), explicit);
+    const buryInterdayLearning = firstBoolean(
+        record.buryInterdayLearning,
+        record.bury_interday_learning,
+        explicit,
+    );
+
+    const inferredBurySiblings =
+        explicit ??
+        ([buryNew, buryReviews, buryInterdayLearning].some((value) => value === true)
+            ? true
+            : [buryNew, buryReviews, buryInterdayLearning].some((value) => value === false)
+                ? false
+                : undefined);
+
+    return {
+        burySiblings: inferredBurySiblings,
+        buryNew,
+        buryReviews,
+        buryInterdayLearning,
+    };
+}
+
+function normalizeLeechAction(value: unknown): SchedulerConfig["leechAction"] | undefined {
+    if (value === "suspend" || value === "tag-only") {
+        return value;
     }
 
-    const byQueue = [
-        getNestedBoolean(record.new, "bury"),
-        getNestedBoolean(record.rev, "bury"),
-        firstBoolean(record.buryInterdayLearning, record.bury_interday_learning),
-    ];
-
-    if (byQueue.some((value) => value === true)) {
-        return true;
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.trunc(value) === 0 ? "suspend" : "tag-only";
     }
-    if (byQueue.some((value) => value === false)) {
-        return false;
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "0" || normalized === "suspend") {
+            return "suspend";
+        }
+        if (normalized === "1" || normalized === "tag" || normalized === "tag-only" || normalized === "tag_only") {
+            return "tag-only";
+        }
     }
 
     return undefined;
@@ -782,30 +897,26 @@ function firstKnown(...values: unknown[]): unknown {
     return undefined;
 }
 
-function getNestedNumber(value: unknown, key: string): number | undefined {
+function getNestedValue(value: unknown, key: string): unknown {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         return undefined;
     }
 
-    const candidate = (value as Record<string, unknown>)[key];
+    return (value as Record<string, unknown>)[key];
+}
+
+function getNestedNumber(value: unknown, key: string): number | undefined {
+    const candidate = getNestedValue(value, key);
     return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
 }
 
 function getNestedBoolean(value: unknown, key: string): boolean | undefined {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return undefined;
-    }
-
-    const candidate = (value as Record<string, unknown>)[key];
+    const candidate = getNestedValue(value, key);
     return typeof candidate === "boolean" ? candidate : undefined;
 }
 
 function getNestedArray(value: unknown, key: string): unknown[] | undefined {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return undefined;
-    }
-
-    const candidate = (value as Record<string, unknown>)[key];
+    const candidate = getNestedValue(value, key);
     return Array.isArray(candidate) ? candidate : undefined;
 }
 
@@ -941,6 +1052,10 @@ export const __reviewNewScope = {
     loadScopedNewCardIds,
     persistScopedNewCardIds,
     clearScopedNewCardIds,
+};
+
+export const __reviewCompletion = {
+    loadReviewCompletionState,
 };
 
 export function ratingShortcutToValue(shortcut: string): ReviewRating | null {

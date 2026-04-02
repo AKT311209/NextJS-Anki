@@ -3,10 +3,17 @@ import { CardQueue, CardType, type Card } from "@/lib/types/card";
 
 export type BuryMode = "scheduler" | "user";
 
+export interface SiblingBuryMode {
+    readonly buryNew: boolean;
+    readonly buryReviews: boolean;
+    readonly buryInterdayLearning: boolean;
+}
+
 export interface BurySiblingOptions {
     readonly card: Card;
     readonly mode?: BuryMode;
     readonly restrictToDeckId?: number;
+    readonly buryMode?: SiblingBuryMode;
 }
 
 export async function burySiblingCards(
@@ -14,6 +21,25 @@ export async function burySiblingCards(
     options: BurySiblingOptions,
 ): Promise<number[]> {
     const targetQueue = options.mode === "user" ? CardQueue.UserBuried : CardQueue.SchedBuried;
+    const mode = options.buryMode ?? {
+        buryNew: true,
+        buryReviews: true,
+        buryInterdayLearning: true,
+    };
+
+    const queuesToBury = [
+        mode.buryNew ? CardQueue.New : null,
+        mode.buryReviews ? CardQueue.Review : null,
+        mode.buryInterdayLearning ? CardQueue.DayLearning : null,
+    ].filter((queue): queue is number => queue !== null);
+
+    if (queuesToBury.length === 0) {
+        return [];
+    }
+
+    const queuePlaceholders = queuesToBury.map(() => "?").join(", ");
+    const deckClause = options.restrictToDeckId !== undefined ? "AND did = ?" : "";
+    const deckParams = options.restrictToDeckId !== undefined ? [options.restrictToDeckId] : [];
 
     const rows = await connection.select<{ id: number }>(
         `
@@ -21,28 +47,16 @@ export async function burySiblingCards(
 		FROM cards
 		WHERE nid = ?
 		  AND id != ?
-		  AND queue IN (?, ?, ?, ?)
-		  ${options.restrictToDeckId !== undefined ? "AND did = ?" : ""}
+		  AND queue IN (${queuePlaceholders})
+		  ${deckClause}
 		ORDER BY id ASC
 		`,
-        options.restrictToDeckId !== undefined
-            ? [
-                options.card.nid,
-                options.card.id,
-                CardQueue.New,
-                CardQueue.Learning,
-                CardQueue.Review,
-                CardQueue.DayLearning,
-                options.restrictToDeckId,
-            ]
-            : [
-                options.card.nid,
-                options.card.id,
-                CardQueue.New,
-                CardQueue.Learning,
-                CardQueue.Review,
-                CardQueue.DayLearning,
-            ],
+        [
+            options.card.nid,
+            options.card.id,
+            ...queuesToBury,
+            ...deckParams,
+        ],
     );
 
     if (rows.length === 0) {

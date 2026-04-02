@@ -1,4 +1,4 @@
-const DAY_MS = 24 * 60 * 60 * 1000;
+import { toDayNumber } from "@/lib/scheduler/states";
 
 export interface FuzzOptions {
     readonly cardId: number;
@@ -14,7 +14,7 @@ export function fuzzInterval(intervalDays: number, options: FuzzOptions): number
     }
 
     const spread = computeFuzzSpread(rounded);
-    const daySeed = Math.floor(options.now.getTime() / DAY_MS);
+    const daySeed = toDayNumber(options.now);
     const seed = hash32(`${options.cardId}:${daySeed}`);
     const random = mulberry32(seed)();
 

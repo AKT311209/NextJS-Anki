@@ -1,4 +1,4 @@
-import { Rating, fsrs, type Card as FsrsCard } from "ts-fsrs";
+import { computeNextFsrsStates, createFsrsScheduler, type FsrsStateSnapshot } from "@/lib/scheduler/fsrs-browser";
 import { CardQueue, CardType, type Card, type FsrsMemoryState } from "@/lib/types/card";
 import { RevlogReviewKind } from "@/lib/types/revlog";
 import {
@@ -12,9 +12,9 @@ import {
 import { fuzzInterval } from "@/lib/scheduler/fuzz";
 import { buildFsrsParameters, firstStepMinutes, resolveSchedulerConfig } from "@/lib/scheduler/params";
 import {
-    dueDateFromCard,
+    elapsedSchedulerDays,
     extractFsrsMemory,
-    mapCardTypeToFsrsState,
+    type FsrsCardState,
     mapFsrsStateToCardType,
     mapReviewRatingToGrade,
     mergeCardData,
@@ -54,6 +54,7 @@ export class SchedulerEngine {
         if (leechDetected) {
             nextCard = {
                 ...nextCard,
+                queue: config.leechAction === "suspend" ? CardQueue.Suspended : nextCard.queue,
                 flags: nextCard.flags | 0x80,
                 data: mergeCardData(nextCard, { leech: true }),
             };
@@ -82,30 +83,72 @@ export class SchedulerEngine {
     }
 
     private previewWithFsrs(card: Card, config: SchedulerConfig, now: Date): SchedulerPreview {
-        const scheduler = fsrs(buildFsrsParameters(config));
-        const fsrsCard = toFsrsCard(card, now);
-        const preview = scheduler.repeat(fsrsCard, now);
+        const fsrsParameters = buildFsrsParameters(config);
+        const scheduler = createFsrsScheduler(fsrsParameters.weights);
+        const input = resolveFsrsInput(card, now);
 
-        const again = this.buildTransitionFromFsrs(card, preview[Rating.Again], "again", config, now);
-        const hard = this.buildTransitionFromFsrs(card, preview[Rating.Hard], "hard", config, now);
-        const good = this.buildTransitionFromFsrs(card, preview[Rating.Good], "good", config, now);
-        const easy = this.buildTransitionFromFsrs(card, preview[Rating.Easy], "easy", config, now);
+        try {
+            const preview = computeNextFsrsStates(scheduler, {
+                desiredRetention: fsrsParameters.requestRetention,
+                daysElapsed: input.daysElapsed,
+                stability: input.stability,
+                difficulty: input.difficulty,
+            });
 
-        return { again, hard, good, easy };
+            const again = this.buildTransitionFromFsrs(card, preview.again, "again", config, now, input.daysElapsed);
+            const hard = this.buildTransitionFromFsrs(card, preview.hard, "hard", config, now, input.daysElapsed);
+            const good = this.buildTransitionFromFsrs(card, preview.good, "good", config, now, input.daysElapsed);
+            const easy = this.buildTransitionFromFsrs(card, preview.easy, "easy", config, now, input.daysElapsed);
+
+            return { again, hard, good, easy };
+        } finally {
+            scheduler.free();
+        }
     }
 
     private buildTransitionFromFsrs(
         previousCard: Card,
-        item: { card: FsrsCard; log: { scheduled_days: number; review: Date; elapsed_days: number } },
+        item: FsrsStateSnapshot,
         rating: ReviewRating,
         config: SchedulerConfig,
         now: Date,
+        elapsedDays: number,
     ): SchedulerTransition {
-        let scheduledDays = Math.max(0, Math.trunc(item.log.scheduled_days));
-        let due = item.card.due;
+        const intervalDays = Math.max(0, item.intervalDays);
+        let scheduledDays = Math.max(0, Math.trunc(intervalDays));
+        let due = new Date(now.getTime() + intervalDays * DAY_MS);
 
-        const nextType = mapFsrsStateToCardType(item.card.state);
-        let nextQueue = queueForState(item.card.state, scheduledDays);
+        const nextState = inferNextFsrsState(previousCard, rating, intervalDays);
+        const nextType = mapFsrsStateToCardType(nextState);
+        let nextQueue = queueForState(nextState, intervalDays);
+
+        const useStepDelay = rating === "again" && (nextType === CardType.Learning || nextType === CardType.Relearning);
+
+        if (useStepDelay) {
+            const relearning = nextType === CardType.Relearning;
+            const minutes = firstStepMinutes(config, relearning);
+            due = new Date(now.getTime() + minutes * 60 * 1000);
+            scheduledDays = Math.max(0, Math.floor(minutes / (60 * 24)));
+
+            if (minutes >= 24 * 60) {
+                nextQueue = CardQueue.DayLearning;
+            } else {
+                nextQueue = CardQueue.Learning;
+            }
+        }
+
+        // Enforce minimum interval for cards graduating to Review.
+        // FSRS can return scheduled_days < 1 (e.g. 0.3),
+        // causing ivl=0 Review cards that never escape and appear immediately
+        // due each queue rebuild.
+        if (nextQueue === CardQueue.Review && scheduledDays < 1) {
+            scheduledDays = Math.max(config.minimumInterval, config.graduatingInterval);
+            due = new Date(now.getTime() + scheduledDays * DAY_MS);
+        }
+
+        if (nextQueue === CardQueue.DayLearning && scheduledDays < 1) {
+            scheduledDays = 1;
+        }
 
         if (config.enableFuzz && scheduledDays > 1 && nextQueue === CardQueue.Review) {
             scheduledDays = fuzzInterval(scheduledDays, {
@@ -118,12 +161,19 @@ export class SchedulerEngine {
         }
 
         const fsrsMemory: FsrsMemoryState = {
-            stability: item.card.stability,
-            difficulty: item.card.difficulty,
-            lastReview: item.log.review.getTime(),
-            elapsedDays: item.log.elapsed_days,
+            stability: item.stability,
+            difficulty: item.difficulty,
+            lastReview: now.getTime(),
+            elapsedDays,
             scheduledDays,
         };
+
+        const reps = previousCard.reps + 1;
+        const lapses = previousCard.lapses + (rating === "again" && isLapseCandidate(previousCard.type) ? 1 : 0);
+
+        const learningLeft = nextQueue === CardQueue.Learning || nextQueue === CardQueue.DayLearning
+            ? Math.max(1, previousCard.left || 1)
+            : 0;
 
         const nextCard: Card = {
             ...previousCard,
@@ -132,10 +182,10 @@ export class SchedulerEngine {
             queue: nextQueue,
             due: nextQueue === CardQueue.Learning ? due.getTime() : toDayNumber(due),
             ivl: scheduledDays,
-            factor: difficultyToEase(item.card.difficulty, previousCard.factor),
-            reps: item.card.reps,
-            lapses: item.card.lapses,
-            left: item.card.learning_steps,
+            factor: difficultyToEase(item.difficulty, previousCard.factor),
+            reps,
+            lapses,
+            left: learningLeft,
             data: mergeCardData(previousCard, {
                 scheduler: "fsrs",
                 fsrs: fsrsMemory,
@@ -270,23 +320,34 @@ export class SchedulerEngine {
         });
     }
 }
+interface FsrsInputState {
+    readonly stability?: number;
+    readonly difficulty?: number;
+    readonly daysElapsed: number;
+}
 
-function toFsrsCard(card: Card, now: Date): FsrsCard {
+function resolveFsrsInput(card: Card, now: Date): FsrsInputState {
     const memory = extractFsrsMemory(card);
-    const defaultStability = Math.max(0.1, card.ivl || 0.1);
-    const defaultDifficulty = easeToDifficulty(card.factor);
+
+    if (memory) {
+        const lastReview = new Date(memory.lastReview);
+        const elapsedFromMemory = elapsedSchedulerDays(lastReview, now);
+
+        return {
+            stability: memory.stability,
+            difficulty: memory.difficulty,
+            daysElapsed: elapsedFromMemory,
+        };
+    }
+
+    const inferredLastReview = inferLastReview(card, now);
 
     return {
-        due: dueDateFromCard(card, now),
-        stability: memory?.stability ?? defaultStability,
-        difficulty: memory?.difficulty ?? defaultDifficulty,
-        elapsed_days: Math.max(0, Math.trunc(card.ivl)),
-        scheduled_days: Math.max(0, Math.trunc(card.ivl)),
-        learning_steps: Math.max(0, Math.trunc(card.left)),
-        reps: Math.max(0, Math.trunc(card.reps)),
-        lapses: Math.max(0, Math.trunc(card.lapses)),
-        state: mapCardTypeToFsrsState(card.type),
-        last_review: memory ? new Date(memory.lastReview) : inferLastReview(card, now),
+        stability: card.ivl > 0 ? Math.max(0.1, card.ivl) : undefined,
+        difficulty: card.ivl > 0 ? easeToDifficulty(card.factor) : undefined,
+        daysElapsed: inferredLastReview
+            ? elapsedSchedulerDays(inferredLastReview, now)
+            : Math.max(0, Math.trunc(card.ivl)),
     };
 }
 
@@ -318,6 +379,33 @@ function shouldUseSm2Fallback(card: Card, config: SchedulerConfig): boolean {
     }
 
     return false;
+}
+
+function inferNextFsrsState(previousCard: Card, rating: ReviewRating, intervalDays: number): FsrsCardState {
+    if (rating === "again") {
+        if (previousCard.type === CardType.Review || previousCard.type === CardType.Relearning) {
+            return "relearning";
+        }
+        return "learning";
+    }
+
+    if (previousCard.type === CardType.Review) {
+        return "review";
+    }
+
+    if (previousCard.type === CardType.Relearning) {
+        return intervalDays >= 1 ? "review" : "relearning";
+    }
+
+    if (previousCard.type === CardType.New || previousCard.type === CardType.Learning) {
+        return intervalDays >= 1 ? "review" : "learning";
+    }
+
+    return "review";
+}
+
+function isLapseCandidate(cardType: number): boolean {
+    return cardType === CardType.Review || cardType === CardType.Relearning;
 }
 
 function inferRevlogType(previousType: number, nextType: CardType): number {

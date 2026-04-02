@@ -11,6 +11,40 @@ const BASIC_NOTETYPE_ID = 100_001;
 const BASIC_REVERSED_NOTETYPE_ID = 100_002;
 const CLOZE_NOTETYPE_ID = 100_003;
 
+const DEFAULT_DECK_CONFIG: Record<string, unknown> = {
+    id: DEFAULT_DECK_CONFIG_ID,
+    name: "Default",
+    newPerDay: 20,
+    reviewsPerDay: 200,
+    learningPerDay: 200,
+    learningSteps: ["1m", "10m"],
+    relearningSteps: ["10m"],
+    requestRetention: 0.9,
+    maximumInterval: 36500,
+    burySiblings: false,
+    buryNew: false,
+    buryReviews: false,
+    buryInterdayLearning: false,
+    leechAction: "tag-only",
+    enableFuzz: true,
+    newMix: 0,
+    interdayLearningMix: 0,
+    new: {
+        perDay: 20,
+        delays: [1, 10],
+        bury: false,
+    },
+    rev: {
+        perDay: 200,
+        maxIvl: 36500,
+        bury: false,
+    },
+    lapse: {
+        delays: [10],
+        leechAction: 1,
+    },
+};
+
 const DEFAULT_CARD_CSS = `
 .card {
   font-family: arial;
@@ -45,32 +79,7 @@ export async function ensureCollectionBootstrap(
     const notetypeList = await notetypes.list();
     const defaultNotetypeId = await ensureBuiltInNotetypes(notetypes, notetypeList);
 
-    await config.updateDeckConfig(DEFAULT_DECK_CONFIG_ID, {
-        id: DEFAULT_DECK_CONFIG_ID,
-        name: "Default",
-        newPerDay: 20,
-        reviewsPerDay: 200,
-        learningPerDay: 200,
-        learningSteps: ["1m", "10m"],
-        relearningSteps: ["10m"],
-        requestRetention: 0.9,
-        maximumInterval: 36500,
-        burySiblings: true,
-        enableFuzz: true,
-        newMix: 0,
-        interdayLearningMix: 0,
-        new: {
-            perDay: 20,
-            delays: [1, 10],
-        },
-        rev: {
-            perDay: 200,
-            maxIvl: 36500,
-        },
-        lapse: {
-            delays: [10],
-        },
-    });
+    await ensureDefaultDeckConfig(config);
 
     await config.updateGlobalConfig({
         currentDeckId: defaultDeck.id,
@@ -78,6 +87,8 @@ export async function ensureCollectionBootstrap(
         scheduler: "fsrs",
         collapseTime: 1200,
         newSpread: 0,
+        newCardsIgnoreReviewLimit: false,
+        applyAllParentLimits: false,
     });
 
     return {
@@ -85,6 +96,15 @@ export async function ensureCollectionBootstrap(
         defaultDeckConfigId: DEFAULT_DECK_CONFIG_ID,
         defaultNotetypeId,
     };
+}
+
+async function ensureDefaultDeckConfig(repository: ConfigRepository): Promise<void> {
+    const existing = await repository.getDeckConfig(DEFAULT_DECK_CONFIG_ID);
+    if (existing) {
+        return;
+    }
+
+    await repository.updateDeckConfig(DEFAULT_DECK_CONFIG_ID, DEFAULT_DECK_CONFIG);
 }
 
 async function ensureDefaultDeck(

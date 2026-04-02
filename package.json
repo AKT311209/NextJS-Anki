@@ -10,13 +10,15 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
-        "test:e2e": "playwright test"
+        "test:e2e": "playwright test",
+        "postinstall": "node -e \"const fs=require('fs');const src='node_modules/fsrs-browser/fsrs_browser_bg.wasm';const dest='public/wasm/fsrs_browser_bg.wasm';if(fs.existsSync(src)){fs.mkdirSync('public/wasm',{recursive:true});fs.copyFileSync(src,dest)}\""
     },
     "dependencies": {
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "comlink": "^4.4.2",
         "fflate": "^0.8.2",
+        "fsrs-browser": "^5.2.0",
         "katex": "^0.16.44",
         "lucide-react": "^0.468.0",
         "next": "^16.2.1",
@@ -25,7 +27,6 @@
         "react-dom": "^19.2.4",
         "sql.js": "^1.13.0",
         "tailwind-merge": "^2.5.5",
-        "ts-fsrs": "^5.3.1",
         "wa-sqlite": "^1.0.0",
         "zustand": "^5.0.3"
     },

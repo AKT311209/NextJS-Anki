@@ -1,4 +1,3 @@
-import { Rating, State, type Grade } from "ts-fsrs";
 import {
     CardQueue,
     CardType,
@@ -9,17 +8,55 @@ import {
 import type { ReviewRating } from "@/lib/types/scheduler";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+
+export const DEFAULT_SCHEDULER_ROLLOVER_HOUR = 4;
+
+export const FSRS_RATING = {
+    Again: 1,
+    Hard: 2,
+    Good: 3,
+    Easy: 4,
+} as const;
+
+export type FsrsGrade = (typeof FSRS_RATING)[keyof typeof FSRS_RATING];
+export type FsrsCardState = "new" | "learning" | "review" | "relearning";
 
 export interface StateContext {
     readonly now: Date;
 }
 
-export function toDayNumber(value: Date): number {
-    return Math.floor(value.getTime() / DAY_MS);
+export function toDayNumber(value: Date, rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR): number {
+    const schedulerAligned = schedulerDayTimestamp(value, rolloverHour);
+    return Math.floor(schedulerAligned / DAY_MS);
 }
 
-export function fromDayNumber(dayNumber: number): Date {
-    return new Date(dayNumber * DAY_MS);
+export function fromDayNumber(dayNumber: number, rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR): Date {
+    const normalizedDay = Math.trunc(dayNumber);
+    const rolloverMs = normalizeRolloverHour(rolloverHour) * HOUR_MS;
+
+    // Convert scheduler day number back into a wall-clock Date in local time.
+    // We resolve the UTC offset iteratively to keep DST transitions stable.
+    let utcMillis = normalizedDay * DAY_MS + rolloverMs;
+    for (let attempts = 0; attempts < 3; attempts += 1) {
+        const offsetMillis = new Date(utcMillis).getTimezoneOffset() * MINUTE_MS;
+        const resolved = normalizedDay * DAY_MS + rolloverMs + offsetMillis;
+        if (resolved === utcMillis) {
+            break;
+        }
+        utcMillis = resolved;
+    }
+
+    return new Date(utcMillis);
+}
+
+export function elapsedSchedulerDays(
+    lastReview: Date,
+    now: Date,
+    rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+): number {
+    return Math.max(0, toDayNumber(now, rolloverHour) - toDayNumber(lastReview, rolloverHour));
 }
 
 export function dueDateFromCard(card: Card, now: Date): Date {
@@ -58,54 +95,54 @@ export function isCardDue(card: Card, now: Date): boolean {
     return false;
 }
 
-export function mapReviewRatingToGrade(rating: ReviewRating): Grade {
+export function mapReviewRatingToGrade(rating: ReviewRating): FsrsGrade {
     if (rating === "again") {
-        return Rating.Again;
+        return FSRS_RATING.Again;
     }
     if (rating === "hard") {
-        return Rating.Hard;
+        return FSRS_RATING.Hard;
     }
     if (rating === "good") {
-        return Rating.Good;
+        return FSRS_RATING.Good;
     }
-    return Rating.Easy;
+    return FSRS_RATING.Easy;
 }
 
-export function mapCardTypeToFsrsState(type: number): State {
+export function mapCardTypeToFsrsState(type: number): FsrsCardState {
     if (type === CardType.Learning) {
-        return State.Learning;
+        return "learning";
     }
     if (type === CardType.Review) {
-        return State.Review;
+        return "review";
     }
     if (type === CardType.Relearning) {
-        return State.Relearning;
+        return "relearning";
     }
-    return State.New;
+    return "new";
 }
 
-export function mapFsrsStateToCardType(state: State): CardType {
-    if (state === State.Learning) {
+export function mapFsrsStateToCardType(state: FsrsCardState): CardType {
+    if (state === "learning") {
         return CardType.Learning;
     }
-    if (state === State.Review) {
+    if (state === "review") {
         return CardType.Review;
     }
-    if (state === State.Relearning) {
+    if (state === "relearning") {
         return CardType.Relearning;
     }
     return CardType.New;
 }
 
-export function queueForState(state: State, scheduledDays: number): CardQueue {
-    if (state === State.Review) {
+export function queueForState(state: FsrsCardState, intervalDays: number): CardQueue {
+    if (state === "review") {
         return CardQueue.Review;
     }
-    if (state === State.New) {
+    if (state === "new") {
         return CardQueue.New;
     }
 
-    if (scheduledDays >= 1) {
+    if (intervalDays >= 1) {
         return CardQueue.DayLearning;
     }
 
@@ -156,4 +193,19 @@ export function extractFsrsMemory(card: Card): FsrsMemoryState | undefined {
     }
 
     return fsrs;
+}
+
+function schedulerDayTimestamp(value: Date, rolloverHour: number): number {
+    const normalizedRollover = normalizeRolloverHour(rolloverHour);
+    const localMillis = value.getTime() - value.getTimezoneOffset() * MINUTE_MS;
+    return localMillis - normalizedRollover * HOUR_MS;
+}
+
+function normalizeRolloverHour(rolloverHour: number): number {
+    if (!Number.isFinite(rolloverHour)) {
+        return DEFAULT_SCHEDULER_ROLLOVER_HOUR;
+    }
+
+    const normalized = Math.trunc(rolloverHour) % 24;
+    return normalized >= 0 ? normalized : normalized + 24;
 }

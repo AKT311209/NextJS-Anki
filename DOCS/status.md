@@ -445,5 +445,267 @@
 		- `npm test -- src/hooks/__tests__/phase4-review-scope.test.ts src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/stores/__tests__/phase4-review-store.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx` ✅
 		- `npm run typecheck && npm run lint` ✅
 
+	- Fixed deck options persistence reset on reopen.
+		- Root cause: `ensureCollectionBootstrap()` in `src/lib/storage/bootstrap.ts` unconditionally rewrote default deck config (`dconf` id `1`) on every invocation, which reset user-edited deck options whenever pages/hooks re-ran bootstrap.
+		- Fix:
+			- `src/lib/storage/bootstrap.ts`
+				- Added `DEFAULT_DECK_CONFIG` constant.
+				- Replaced unconditional default config write with `ensureDefaultDeckConfig()`.
+				- `ensureDefaultDeckConfig()` now seeds default deck config only when it is missing.
+		- Regression coverage:
+			- `src/lib/storage/__tests__/phase1-storage.test.ts`
+				- Added `preserves deck config overrides across bootstrap reruns` test to verify saved deck options survive repeated bootstrap calls.
 
+	- Verification completed:
+		- `npm test -- src/lib/storage/__tests__/phase1-storage.test.ts` ✅
+		- `npm run typecheck` ✅
+
+	- Implemented **Phase 7: Statistics & Visualization**.
+		- Replaced all stats placeholders with a full deck-aware analytics pipeline.
+		- Added `src/hooks/use-stats.ts` end-to-end implementation:
+			- Aggregates overview KPIs (today reviews/correct rate/avg answer time, total cards/notes/reviews, due-today)
+			- Computes card-state counts (new/learning/review/relearning/suspended/buried)
+			- Builds chart datasets for:
+				- review heatmap (365-day activity)
+				- retention trend (30-day window)
+				- forecast (stacked learning/review/new over 30-day horizon)
+				- interval distribution
+				- ease-factor distribution
+				- maturity breakdown
+				- hour-of-day review distribution
+			- Adds deck-scope semantics (selected deck includes descendants by `::` hierarchy)
+			- Adds deck-level analytics (per-deck retention + per-deck forecast table)
+			- Adds deck-specific FSRS config snapshot extraction from `dconf`
+			- Adds short-lived in-memory snapshot caching keyed by deck/day
+		- Replaced chart/UI placeholders:
+			- `src/components/stats/ReviewHeatmap.tsx`
+			- `src/components/stats/RetentionChart.tsx`
+			- `src/components/stats/ForecastChart.tsx`
+			- `src/app/stats/page.tsx` now renders full stats dashboard with:
+				- deck filter + refresh
+				- KPI cards and card-state chips
+				- heatmap, retention, forecast visualizations
+				- interval/ease/maturity distributions
+				- hour-of-day histogram
+				- per-deck retention/forecast tables
+				- FSRS settings snapshot panel for selected deck
+		- Added Phase 7 tests:
+			- `src/hooks/__tests__/phase7-stats.test.ts`
+				- verifies overview/trend/forecast aggregation from fixture data
+				- verifies deck scoping and FSRS config extraction
+
+	- Verification completed:
+		- `npm test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
+		- `npm run lint && npm run typecheck && npm test` ✅
+
+	- Fixed deck options runtime toggle crash and optimizer retention precision issues.
+		- `src/app/deck/[deckId]/options/page.tsx`
+			- Fixed checkbox handlers (`Bury siblings`, `Interval fuzzing`) by capturing `checked` before the functional state update, preventing `event.currentTarget` from becoming `null`.
+			- Added desired-retention normalization (`clamp 0.80..0.99` + round to `0.01` step) across load/edit/optimizer/save paths so the numeric input always remains valid for saving.
+			- Normalized persisted `maximumInterval` to a positive integer before writing deck config.
+		- `src/lib/scheduler/params.ts`
+			- Rounded optimizer-suggested `requestRetention` to `0.01` increments at source to avoid long floating-point values propagating to UI forms.
+		- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+			- Added regression assertions ensuring optimizer retention is quantized to 2 decimal places (`0.86` in fixture case).
+
+	- Verification completed:
+		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm run lint` ✅
+		- `npm run typecheck` ✅
+
+	- Fixed FSRS Review cards stuck at 0-day interval ("no more cards to learn" bug).
+		- **Root cause**: `buildTransitionFromFsrs()` in `src/lib/scheduler/engine.ts` used `Math.trunc()` on FSRS `scheduled_days`, which floors fractional values (< 1 day) to 0. Cards transitioning from Learning → Review received `ivl = 0` and `due = today`, making them immediately due every queue rebuild without ever progressing. The card never escaped because FSRS uses `ivl` as a proxy for memory stability — `ivl = 0` produces very short intervals that always truncate back to 0.
+		- **Fix**: Added minimum interval enforcement in `buildTransitionFromFsrs()`. When a card graduates to Review (`CardQueue.Review`) with `scheduledDays < 1`, the interval is bumped to `max(minimumInterval, graduatingInterval)` and the `due` date is recomputed accordingly. This mirrors the SM-2 fallback path which already enforced `Math.max(config.minimumInterval, scheduledDays)`.
+		- Files changed:
+			- `src/lib/scheduler/engine.ts` — added minimum interval floor after `scheduledDays` truncation for Review-bound cards
+			- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts` — added regression test `enforces minimum interval for FSRS cards graduating to Review`
+		- Verification completed:
+			- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (10 tests, including new regression)
+			- `npm run typecheck` ✅
+
+	- Migrated scheduler + optimizer stack from `ts-fsrs` to `fsrs-browser` (fsrs-rs WASM), and aligned optimizer behavior with current Anki parameter optimization.
+		- Added `src/lib/scheduler/fsrs-browser.ts` runtime adapter:
+			- initializes `fsrs-browser`
+			- exposes scheduler next-state snapshots (`nextStates`)
+			- exposes Anki-style parameter training (`computeParametersAnki`)
+			- centralizes FSRS default-weight normalization.
+		- Updated `src/lib/scheduler/engine.ts` to use `fsrs-browser` scheduler outputs instead of `ts-fsrs` repeat APIs, while preserving existing queue/revlog contracts and minimum review-interval safeguards.
+		- Updated `src/lib/scheduler/params.ts` optimizer logic:
+			- now performs parameter-based optimization through `computeParametersAnki`
+			- keeps `requestRetention` and `maximumInterval` fixed to user-selected values
+			- returns optimized `weights` as the optimizer output target.
+		- Updated `src/app/deck/[deckId]/options/page.tsx` optimizer flow:
+			- queries Anki-style revlog fields (`id`, `cid`, `ease`, `type`)
+			- applies only optimized `fsrsWeights` to form/config state
+			- no longer mutates desired retention or max interval from optimizer output.
+		- Added Vitest/jsdom WASM runtime shim in `src/test/setup.ts` for `file://` fetches so `fsrs-browser` initializes reliably in tests.
+		- Updated scheduler state typing in `src/lib/scheduler/states.ts` to remove `ts-fsrs` enums.
+		- Removed `ts-fsrs` dependency from `package.json`/`package-lock.json`.
+		- Updated planning/guidance docs to reflect `fsrs-browser` and parameter-based optimizer semantics:
+			- `DOCS/plan.md`
+			- `DOCS/implementation.md`
+			- `CLAUDE.md`
+		- Updated scheduler test expectations in `src/lib/scheduler/__tests__/phase2-scheduler.test.ts` for fixed retention/max-interval optimization behavior.
+		- Verification completed:
+			- `npm run typecheck` ✅
+			- `npm run lint` ✅
+			- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+			- `npm test` ✅ (47 tests)
+
+	- Fixed same-day FSRS review behavior to match Anki rollover semantics.
+		- **Root cause**: elapsed-day and scheduler-day calculations were based on raw 24-hour UTC day boundaries (`Math.floor(timestamp / 86400)`), which diverges from Anki’s local rollover-day model (default 4am). Reviews crossing the rollover (e.g. 03:00 → 05:00 local) could incorrectly remain `elapsedDays = 0`.
+		- **Fix**:
+			- `src/lib/scheduler/states.ts`
+				- Updated `toDayNumber()` to compute scheduler day numbers using local timezone + rollover-hour alignment (default 4am).
+				- Added `elapsedSchedulerDays()` helper and rollover-aware `fromDayNumber()` behavior.
+			- `src/lib/scheduler/engine.ts`
+				- FSRS input now computes `daysElapsed` via `elapsedSchedulerDays(lastReview, now)` instead of raw elapsed milliseconds.
+			- `src/lib/scheduler/fuzz.ts`
+				- Fuzz seed day now uses rollover-aware `toDayNumber(now)`.
+			- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+				- Added regression tests:
+					- `uses Anki-style rollover boundaries when computing scheduler day numbers`
+					- `counts FSRS elapsed days by scheduler day rollover, not raw elapsed hours`
+		- Key decision:
+			- Applied the rollover-day model at shared scheduler day utilities so queue due checks, FSRS elapsed-day inputs, and fuzz day seeding stay consistent.
+		- Verification completed:
+			- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (12 tests)
+			- `npm test -- src/hooks/__tests__/phase4-review-scope.test.ts` ✅ (3 tests)
+			- `npm run typecheck` ✅
+
+	- Enhanced the review completed state to show Anki-style "due later today" and next-card timing.
+		- `src/hooks/use-review.ts`
+			- Added completion-summary state to `useReview()`:
+				- `dueLaterToday`
+				- `nextCardDueInMinutes`
+			- Added DB-backed computation that mirrors scheduler-day semantics:
+				- counts intraday learning cards (`queue = Learning`) due after `now`
+				- bounds "today" to the next scheduler day rollover (`fromDayNumber(toDayNumber(now) + 1)`)
+			- Recomputed this summary on session init, answer, and undo so the done view stays current.
+			- Exposed helper under `__reviewCompletion` for targeted tests.
+		- `src/app/review/[deckId]/page.tsx`
+			- Updated the "All done for now" panel to show:
+				- number of cards still due today
+				- next card ETA in minutes (or "No more cards due today")
+		- Added regression tests:
+			- `src/hooks/__tests__/phase4-review-completion.test.ts`
+				- verifies due-later-today counting and next-card minute ETA
+				- verifies empty summary when no intraday cards remain today
+		- Implementation note:
+			- Resolved an async/sync scheduler signature mismatch found during typecheck by restoring sync scheduler bridge APIs expected by existing call sites (`engine` + `fsrs-browser`).
+
+	- Verification completed:
+		- `npm test -- src/hooks/__tests__/phase4-review-completion.test.ts src/hooks/__tests__/phase4-review-scope.test.ts` ✅
+		- `npm run typecheck` ✅
+
+	- Fixed Anki-parity timing for `Again` and humanized browser Due/Interval displays.
+		- **Root cause**: FSRS `Again` transitions were using fractional-day intervals directly when positive (e.g. `0.2d` ≈ 295 minutes), bypassing relearning-step priority expected in Anki.
+		- **Scheduler fix** (`src/lib/scheduler/engine.ts`): `Again` now prioritizes first learning/relearning step delay whenever transitioning into Learning/Relearning, matching Anki behavior for step-based lapses.
+		- **Formatting improvements**:
+			- Added shared Anki-style timespan formatter in `src/lib/scheduler/timespan.ts` (`s/m/h/d/mo/y`, collapse-aware `<...` answer labels).
+			- Updated review answer interval labels in `src/hooks/use-review.ts` to use shared formatter.
+			- Updated browser displays in:
+				- `src/components/browser/CardTable.tsx`
+				- `src/components/browser/CardBrowser.tsx`
+			  so `Due`/`Interval` are no longer raw numbers and now render human-friendly values.
+		- Added regression and formatting tests:
+			- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts` (relearning-step priority on `Again`)
+			- `src/lib/scheduler/__tests__/phase2-timespan.test.ts` (timespan + browser due/interval formatting)
+		- Minor lint-compliance tweak in `src/hooks/use-review.ts`:
+			- Deferred initial session start to a microtask inside effect to satisfy `react-hooks/set-state-in-effect` without changing flow semantics.
+
+	- Verification completed:
+		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/lib/scheduler/__tests__/phase2-timespan.test.ts src/components/browser/__tests__/phase5-browser-ui.test.tsx` ✅
+		- `npm run test -- src/components/review/__tests__/phase4-review-ui.test.tsx src/stores/__tests__/phase4-review-store.test.ts src/hooks/__tests__/phase4-review-completion.test.ts src/hooks/__tests__/phase4-review-scope.test.ts` ✅
+		- `npm run lint` ✅
+		- `npm run typecheck` ✅
+
+	- Performed a deep scheduler/deck-options parity pass against Anki Desktop internals and implemented high-impact behavior alignment.
+		- Upstream analysis covered:
+			- `ANKIDESKTOP/rslib/src/scheduler/answering/mod.rs`
+			- `ANKIDESKTOP/rslib/src/scheduler/queue/builder/{mod.rs,gathering.rs,burying.rs,sorting.rs}`
+			- `ANKIDESKTOP/rslib/src/decks/limits.rs`
+			- `ANKIDESKTOP/rslib/src/deckconfig/{mod.rs,schema11.rs,update.rs}`
+		- Scheduler/deck-option model parity updates:
+			- `src/lib/types/scheduler.ts`
+				- Added Anki-aligned config surface:
+					- per-queue bury flags (`buryNew`, `buryReviews`, `buryInterdayLearning`)
+					- `newCardsIgnoreReviewLimit`
+					- `applyAllParentLimits`
+					- `leechAction` (`tag-only`/`suspend`)
+			- `src/lib/scheduler/params.ts`
+				- Extended normalization/parsing for the new config fields.
+				- Added reusable `schedulerOverridesFromUnknown()` parser for mixed legacy/modern Anki config shapes.
+				- Preserved compatibility where legacy `burySiblings=true` forces all bury modes.
+			- `src/lib/scheduler/engine.ts`
+				- Implemented leech-action behavior parity: optional suspend-on-leech.
+		- Queue builder parity updates:
+			- `src/lib/scheduler/queue.ts`
+				- Added parent/child deck scope handling (selected deck includes descendants).
+				- Added optional parent-limit application (`applyAllParentLimits`).
+				- Added review→new coupling parity (`newCardsIgnoreReviewLimit` behavior).
+				- Replaced coarse end-of-queue sibling collapse with Anki-like seen-note bury-mode propagation by card kind.
+				- Added per-deck config resolution for queue limits + bury mode through deck `conf` mappings.
+		- Answering/burying parity updates:
+			- `src/lib/scheduler/burying.ts`
+				- Added per-queue sibling bury controls for New/Review/Interday Learning.
+			- `src/lib/scheduler/answering.ts`
+				- Normalizes config before applying transitions/burying and applies selective bury behavior.
+		- Deck options + persistence updates:
+			- `src/app/deck/[deckId]/options/page.tsx`
+				- Added UI/options for:
+					- per-queue bury toggles
+					- leech action
+					- global review/new limit flags (`newCardsIgnoreReviewLimit`, `applyAllParentLimits`)
+				- Saves deck-level and global-level config keys in Anki-compatible shapes.
+			- `src/hooks/use-review.ts`
+				- Expanded config parsing for new deck/global scheduler options.
+			- `src/lib/storage/bootstrap.ts`
+				- Seeded new default/global config keys for scheduler/deck-options behavior.
+			- `src/lib/types/deck.ts`
+				- Added type fields for the new deck-scheduling options.
+		- Tests updated/added:
+			- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+				- Added regression coverage for:
+					- review-limit capping of new cards vs ignore-review-limit mode
+					- parent-deck descendant inclusion
+					- parent-limit enforcement when enabled
+					- per-queue selective sibling bury
+		- Verification completed:
+			- `npm run typecheck` ✅
+			- `npm run lint` ✅
+			- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+			- `npm run test -- src/lib/storage/__tests__/phase1-storage.test.ts src/hooks/__tests__/phase7-stats.test.ts` ✅
+
+		- Fixed review queue ordering so learn-ahead learning cards can mix with new cards instead of always appearing after all new cards.
+			- Root cause:
+				- `SchedulerQueueBuilder` always appended `intradayAhead` cards after the full main queue (`intradayNow -> main -> intradayAhead`).
+				- In sessions with many new cards, this forced a strict "all new first, then learning" flow, even when learn-ahead learning cards should be mixed into study flow.
+			- Fix:
+				- `src/lib/scheduler/queue.ts`
+					- In `newReviewMix = mix-with-reviews` mode, interspersed `intradayAhead` with `main` using the existing Anki-style intersperser logic.
+					- Kept non-mix modes (`before-reviews` / `after-reviews`) behavior unchanged.
+			- Regression coverage:
+				- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+					- Added `mixes learn-ahead learning with new cards when mix mode is enabled`.
+			- Verification completed:
+				- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+				- `npm run lint && npm run typecheck` ✅
+				- `npm test` ✅ (61 tests)
+
+		- Stabilized flaky parent-limit scheduler test by fixing deck ID collisions.
+			- Root cause:
+				- `DecksRepository.create()` used `Date.now()` directly for auto IDs.
+				- Under heavier parallel test execution, parent/child deck creation could occur in the same millisecond, causing identical IDs and silent deck overwrite in `col.decks`.
+				- This intermittently removed the parent deck relationship and made `applyAllParentLimits` appear ineffective (`review` count 3 instead of 1).
+			- Fix:
+				- `src/lib/storage/repositories/decks.ts`
+					- Added `resolveNextDeckId()` and switched `create()` to allocate unique IDs by probing existing deck IDs and incrementing until free.
+					- Preserves preferred IDs when available while preventing accidental overwrite on collision.
+			- Verification completed:
+				- Stress rerun (5x) of failing case:
+					- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts -t "applies parent deck limits when enabled"` ✅
+				- `npm test` ✅ (full suite, 60 tests)
+				- `npm run lint` ✅
+				- `npm run typecheck` ✅
 

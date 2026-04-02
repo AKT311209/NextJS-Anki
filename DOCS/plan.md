@@ -8,7 +8,7 @@
 ## Guiding Principles
 
 1. **Client-first**: All computation in the browser (Web Workers for heavy ops)
-2. **FSRS fidelity**: Use `ts-fsrs` — the battle-tested TypeScript port of FSRS v6
+2. **FSRS fidelity**: Use `fsrs-browser` (fsrs-rs in WebAssembly) for both scheduler and optimizer
 3. **Anki compatibility**: Import/export `.apkg` files, preserve SQLite schema for data portability
 4. **Offline-capable**: PWA with Service Worker, OPFS for persistent storage
 5. **Progressive enhancement**: Core review works offline; sync is a future add-on
@@ -23,7 +23,7 @@
 | Language | TypeScript (strict) | Type safety across entire codebase |
 | UI | shadcn/ui + TailwindCSS v4 | Accessible, composable, performant |
 | State | Zustand | Lightweight, works with Web Workers |
-| Scheduler | ts-fsrs | Official TS port of FSRS, browser-compatible |
+| Scheduler | fsrs-browser | Browser WASM bindings for fsrs-rs with scheduler + optimizer support |
 | Storage | wa-sqlite + OPFS VFS | Full SQLite in browser, best perf |
 | Fallback storage | sql.js + IndexedDB | Compatibility for older browsers |
 | Media | OPFS (Origin Private File System) | Binary file storage, high perf |
@@ -75,7 +75,7 @@ src/
 │   │   └── sql-functions.ts      # Custom SQL functions (field_at_index, etc.)
 │   │
 │   ├── scheduler/                # Scheduling engine
-│   │   ├── engine.ts             # Scheduler core (wraps ts-fsrs)
+│   │   ├── engine.ts             # Scheduler core (wraps fsrs-browser)
 │   │   ├── states.ts             # State machine (New/Learn/Review/Relearn)
 │   │   ├── queue.ts              # Queue builder (fetches due cards)
 │   │   ├── answering.ts          # Card answering logic
@@ -199,7 +199,7 @@ This ordering preserves the original architecture while reducing early project r
 
 **Tasks:**
 1. `npx create-next-app@latest` with TypeScript, TailwindCSS, App Router
-2. Install core deps: `ts-fsrs`, `wa-sqlite`, `sql.js`, `zustand`, `comlink`, `shadcn/ui`
+2. Install core deps: `fsrs-browser`, `wa-sqlite`, `sql.js`, `zustand`, `comlink`, `shadcn/ui`
 3. Configure `next.config.ts` for Turbopack-compatible WASM loading, Web Workers, and headers for OPFS
 4. Set up Vitest + Playwright
 5. Create the directory structure above
@@ -250,7 +250,7 @@ This ordering preserves the original architecture while reducing early project r
 
 ### Phase 2: Core Domain & Scheduling
 
-**Goal**: ts-fsrs integrated, state machine ported, card answering works.
+**Goal**: fsrs-browser integrated, state machine ported, card answering works.
 
 **Tasks:**
 1. **Type definitions** (`lib/types/`)
@@ -259,8 +259,8 @@ This ordering preserves the original architecture while reducing early project r
    - Match Anki's field-for-field layout for .apkg compatibility
 
 2. **Scheduler engine** (`lib/scheduler/engine.ts`)
-   - Wrap `ts-fsrs` with Anki-compatible interface
-   - Map Anki's 4-state model (New/Learn/Review/Relearn) to ts-fsrs states
+   - Wrap `fsrs-browser` with Anki-compatible interface
+   - Map Anki's 4-state model (New/Learn/Review/Relearn) to fsrs-browser scheduler outputs
    - Handle FSRS parameters (w[0]–w[20])
    - Support SM-2 fallback for legacy cards
 
@@ -419,7 +419,8 @@ This ordering preserves the original architecture while reducing early project r
    - Daily limits (new, review)
    - Learning steps
    - FSRS parameters (desired retention, max interval, fuzz)
-   - FSRS optimizer (compute optimal parameters from review history)
+   - FSRS optimizer (compute optimal parameters/weights from review history)
+   - Keep desired retention and max interval user-controlled; optimizer should tune parameters to those targets
    - Display options
 
 **Reference:** `ANKIDESKTOP/qt/aqt/deckbrowser.py`, `ANKIDESKTOP/qt/aqt/editor.py`, `ANKIDESKTOP/qt/aqt/browser/`
@@ -558,12 +559,12 @@ This ordering preserves the original architecture while reducing early project r
 - wa-sqlite with OPFS gives near-native SQLite performance
 - sql.js kept as fallback for browsers without OPFS
 
-### Why ts-fsrs?
-- Official TypeScript port maintained by the open-spaced-repetition project
-- Used in production by multiple applications
-- API matches FSRS v6 algorithm
-- Browser-compatible, no Node.js dependencies
-- Supports parameter optimization
+### Why fsrs-browser?
+- Uses `fsrs-rs` directly in the browser via WebAssembly
+- Supports both scheduler and optimizer in one runtime
+- Closer behavioral parity with Anki's current FSRS stack
+- Browser-compatible and worker-friendly for heavy optimization workloads
+- Enables parameter-based optimization while keeping user-selected retention/max interval fixed
 
 ### Why Web Workers?
 - FSRS parameter optimization is CPU-intensive

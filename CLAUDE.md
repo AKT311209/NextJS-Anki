@@ -22,7 +22,7 @@ NextJS App (React) → Zustand stores → Web Workers (comlink) → wa-sqlite (O
 
 Core layers being built (in `src/`):
 - `lib/storage/` — wa-sqlite with Anki-compatible SQLite schema, custom SQL functions, repositories
-- `lib/scheduler/` — Wraps `ts-fsrs` for FSRS v6 scheduling, state machine, queue builder, answering logic
+- `lib/scheduler/` — Wraps `fsrs-browser` (fsrs-rs WASM) for FSRS scheduling, state machine, queue builder, and optimizer logic
 - `lib/rendering/` — Mustache-like template parser/renderer, cloze processing, filters, math rendering
 - `lib/search/` — Anki-compatible search parser → AST → SQL builder
 - `lib/import-export/` — .apkg reader/writer, CSV import
@@ -55,4 +55,4 @@ Core layers being built (in `src/`):
 
 ## Tech Stack
 
-Next.js 15 (App Router), TypeScript strict, TailwindCSS v4, shadcn/ui, Zustand, ts-fsrs, wa-sqlite + OPFS VFS (sql.js fallback), comlink (Web Workers), next-pwa, KaTeX/MathJax, Recharts, next-intl, Vitest + Playwright.
+Next.js 15 (App Router), TypeScript strict, TailwindCSS v4, shadcn/ui, Zustand, fsrs-browser, wa-sqlite + OPFS VFS (sql.js fallback), comlink (Web Workers), next-pwa, KaTeX/MathJax, Recharts, next-intl, Vitest + Playwright.

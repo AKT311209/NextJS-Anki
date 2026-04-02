@@ -30,7 +30,7 @@ Each step below has:
 
 **Tasks**
 1. Scaffold/verify Next.js 16 App Router setup with TypeScript strict mode and Turbopack.
-2. Install baseline dependencies (`zustand`, `comlink`, `ts-fsrs`, `wa-sqlite`, `sql.js`, test tooling).
+2. Install baseline dependencies (`zustand`, `comlink`, `fsrs-browser`, `wa-sqlite`, `sql.js`, test tooling).
 3. Configure lint, format, unit test, and e2e test scripts.
 4. Add architecture folder skeleton from `plan.md`.
 5. Add CI baseline workflow (typecheck + unit tests).
@@ -96,12 +96,13 @@ Each step below has:
 **Tasks**
 1. Implement scheduler context model (deck config + now + timezone).
 2. Build queue order logic: learn/relearn → review → new.
-3. Wrap `ts-fsrs` for review scheduling and memory state updates.
-4. Implement rating handler (`Again/Hard/Good/Easy`) that:
+3. Wrap `fsrs-browser` for review scheduling and memory state updates.
+4. Implement parameter-based optimizer flow aligned with Anki: optimize FSRS weights from revlog history while keeping desired retention and max interval user-configured.
+5. Implement rating handler (`Again/Hard/Good/Easy`) that:
    - updates card state
    - writes revlog entry
    - returns next-interval previews
-5. Add deterministic tests for transition paths and interval outputs.
+6. Add deterministic tests for transition paths and interval outputs.
 
 **Deliverables**
 - `engine.ts`, `queue.ts`, `answering.ts` MVP versions

@@ -1,5 +1,6 @@
 import type { SearchCardResult, SearchSort, SearchSortField } from "@/hooks/use-search";
 import { queueToLabel } from "@/hooks/use-search";
+import { formatBrowserDueValue, formatBrowserIntervalValue } from "@/lib/scheduler/timespan";
 
 export interface CardTableProps {
     readonly rows: readonly SearchCardResult[];
@@ -29,6 +30,7 @@ export function CardTable({
     onOpenCard,
 }: CardTableProps) {
     const allSelected = rows.length > 0 && rows.every((row) => selectedIds.has(row.id));
+    const now = new Date();
 
     return (
         <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
@@ -88,10 +90,10 @@ export function CardTable({
                                     <td className="px-3 py-2 align-top text-slate-200">{row.deckName}</td>
                                     <td className="px-3 py-2 align-top text-slate-300">{row.noteTypeName}</td>
                                     <td className="px-3 py-2 align-top text-slate-300">{queueToLabel(row.queue)}</td>
-                                    <td className="px-3 py-2 align-top text-slate-300">{row.due}</td>
+                                    <td className="px-3 py-2 align-top text-slate-300">{formatBrowserDueValue(row, now)}</td>
                                     <td className="px-3 py-2 align-top text-slate-300">{row.deckName}</td>
                                     <td className="px-3 py-2 align-top text-slate-300">{row.reps}</td>
-                                    <td className="px-3 py-2 align-top text-slate-300">{row.ivl}d</td>
+                                    <td className="px-3 py-2 align-top text-slate-300">{formatBrowserIntervalValue(row)}</td>
                                     <td className="px-3 py-2 align-top text-slate-300">{new Date(row.mod).toLocaleDateString()}</td>
                                 </tr>
                             ))
