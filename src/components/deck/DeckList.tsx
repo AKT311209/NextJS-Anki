@@ -4,7 +4,6 @@ import { DeckTree } from "@/components/deck/DeckTree";
 
 export interface DeckListProps {
     readonly nodes: readonly DeckTreeNode[];
-    readonly defaultDeckId: number | null;
     readonly loading: boolean;
     readonly error: string | null;
     readonly onCreateRootDeck: (name: string) => Promise<void>;
@@ -17,7 +16,6 @@ export interface DeckListProps {
 
 export function DeckList({
     nodes,
-    defaultDeckId,
     loading,
     error,
     onCreateRootDeck,
@@ -76,7 +74,6 @@ export function DeckList({
             ) : (
                 <DeckTree
                     nodes={nodes}
-                    defaultDeckId={defaultDeckId}
                     onToggleCollapse={onToggleCollapse}
                     onCreateChild={onCreateChild}
                     onRename={onRename}

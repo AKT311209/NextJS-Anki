@@ -3,6 +3,8 @@ import type { RevlogEntry } from "@/lib/types/revlog";
 
 export type ReviewRating = "again" | "hard" | "good" | "easy";
 
+export type SchedulerReviewMix = "mix-with-reviews" | "after-reviews" | "before-reviews";
+
 export const REVIEW_RATINGS: readonly ReviewRating[] = ["again", "hard", "good", "easy"] as const;
 
 export interface SchedulerLimits {
@@ -40,6 +42,9 @@ export interface SchedulerConfig {
     readonly startingEase: number;
     readonly leechThreshold: number;
     readonly burySiblings: boolean;
+    readonly newReviewMix: SchedulerReviewMix;
+    readonly interdayLearningMix: SchedulerReviewMix;
+    readonly learnAheadSeconds: number;
     readonly limits: SchedulerLimits;
     readonly fsrsWeights?: readonly number[];
 }
@@ -62,6 +67,9 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     startingEase: 2500,
     leechThreshold: 8,
     burySiblings: true,
+    newReviewMix: "mix-with-reviews",
+    interdayLearningMix: "mix-with-reviews",
+    learnAheadSeconds: 1200,
     limits: {
         newPerDay: 20,
         reviewsPerDay: 200,
@@ -85,6 +93,7 @@ export interface QueueBuildRequest {
     readonly deckId?: number;
     readonly config: SchedulerConfig;
     readonly buriedCardIds?: ReadonlySet<number>;
+    readonly allowedNewCardIds?: ReadonlySet<number>;
 }
 
 export interface QueueBuildResult {

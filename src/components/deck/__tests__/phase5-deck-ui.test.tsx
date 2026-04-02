@@ -34,7 +34,6 @@ describe("Phase 5 deck UI", () => {
                         children: [],
                     },
                 ]}
-                defaultDeckId={1}
                 loading={false}
                 error={null}
                 onCreateRootDeck={onCreateRootDeck}
@@ -53,9 +52,11 @@ describe("Phase 5 deck UI", () => {
         await user.click(screen.getByRole("button", { name: /add child/i }));
         await user.click(screen.getByRole("button", { name: /rename/i }));
         await user.click(screen.getByRole("button", { name: /move/i }));
+        await user.click(screen.getByRole("button", { name: /delete/i }));
 
         expect(onCreateChild).toHaveBeenCalledWith(1);
         expect(onRename).toHaveBeenCalledWith(1);
         expect(onMove).toHaveBeenCalledWith(1);
+        expect(onDelete).toHaveBeenCalledWith(1);
     });
 });

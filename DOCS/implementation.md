@@ -29,7 +29,7 @@ Each step below has:
 **Objective**: Ensure a stable development base with strict typing and test plumbing.
 
 **Tasks**
-1. Scaffold/verify Next.js 15 app-router setup with TypeScript strict mode.
+1. Scaffold/verify Next.js 16 App Router setup with TypeScript strict mode and Turbopack.
 2. Install baseline dependencies (`zustand`, `comlink`, `ts-fsrs`, `wa-sqlite`, `sql.js`, test tooling).
 3. Configure lint, format, unit test, and e2e test scripts.
 4. Add architecture folder skeleton from `plan.md`.

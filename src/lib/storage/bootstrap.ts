@@ -57,6 +57,8 @@ export async function ensureCollectionBootstrap(
         maximumInterval: 36500,
         burySiblings: true,
         enableFuzz: true,
+        newMix: 0,
+        interdayLearningMix: 0,
         new: {
             perDay: 20,
             delays: [1, 10],
@@ -74,6 +76,8 @@ export async function ensureCollectionBootstrap(
         currentDeckId: defaultDeck.id,
         currentNotetypeId: defaultNotetypeId,
         scheduler: "fsrs",
+        collapseTime: 1200,
+        newSpread: 0,
     });
 
     return {

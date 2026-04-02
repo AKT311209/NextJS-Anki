@@ -14,24 +14,6 @@ const withPWA =
 const nextConfig: NextConfig = {
     reactStrictMode: true,
     allowedDevOrigins: ["127.0.0.1", "localhost"],
-    webpack: (config, { isServer }) => {
-        config.experiments = {
-            ...config.experiments,
-            asyncWebAssembly: true,
-            topLevelAwait: true,
-        };
-
-        config.module.rules.push({
-            test: /\.wasm$/,
-            type: "webassembly/async",
-        });
-
-        config.output.webassemblyModuleFilename = isServer
-            ? "../static/wasm/[modulehash].wasm"
-            : "static/wasm/[modulehash].wasm";
-
-        return config;
-    },
     async headers() {
         return [
             {

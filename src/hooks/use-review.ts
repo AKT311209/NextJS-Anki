@@ -7,6 +7,7 @@ import { SchedulerAnsweringService } from "@/lib/scheduler/answering";
 import { SchedulerEngine } from "@/lib/scheduler/engine";
 import { resolveSchedulerConfig } from "@/lib/scheduler/params";
 import { SchedulerQueueBuilder } from "@/lib/scheduler/queue";
+import { toDayNumber } from "@/lib/scheduler/states";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository, type CardRecord } from "@/lib/storage/repositories/cards";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
@@ -21,6 +22,7 @@ import {
     type ReviewRating,
     type SchedulerConfig,
     type SchedulerPreview,
+    type SchedulerReviewMix,
 } from "@/lib/types/scheduler";
 import { useReviewStore, type ActiveReviewCard } from "@/stores/review-store";
 
@@ -52,6 +54,7 @@ export interface UseReviewResult {
 }
 
 const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
+const REVIEW_NEW_SCOPE_STORAGE_PREFIX = "nextjs-anki:review:new-scope:v1";
 
 type NotetypeFieldShape = {
     readonly name?: unknown;
@@ -69,6 +72,8 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const nowProvider = useMemo(() => options.nowProvider ?? (() => new Date()), [options.nowProvider]);
     const engineRef = useRef(new SchedulerEngine());
     const shownAtMsRef = useRef<number>(0);
+    const sessionNewCardIdsRef = useRef<Set<number> | null>(null);
+    const sessionScopeKeyRef = useRef<string | null>(null);
 
     const collection = useCollection();
 
@@ -95,6 +100,12 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
 
         startLoading(options.deckId);
         const now = nowProvider();
+        const scopeKey = buildReviewScopeKey(options.deckId, toDayNumber(now));
+
+        if (sessionScopeKeyRef.current !== scopeKey) {
+            sessionScopeKeyRef.current = scopeKey;
+            sessionNewCardIdsRef.current = loadScopedNewCardIds(scopeKey);
+        }
 
         try {
             const config = await loadSchedulerConfig(collection.connection, options.deckId);
@@ -103,7 +114,23 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 now,
                 deckId: options.deckId ?? undefined,
                 config,
+                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
+
+            if (sessionNewCardIdsRef.current === null) {
+                const scopedNewIds = new Set(
+                    queueResult.cards
+                        .filter((card) => card.queue === CardQueue.New)
+                        .map((card) => card.id),
+                );
+
+                if (scopedNewIds.size > 0) {
+                    sessionNewCardIdsRef.current = scopedNewIds;
+                    persistScopedNewCardIds(scopeKey, scopedNewIds);
+                } else {
+                    clearScopedNewCardIds(scopeKey);
+                }
+            }
 
             const nextCard = await buildActiveReviewCard(
                 collection.connection,
@@ -163,6 +190,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     now,
                     deckId: state.deckId ?? undefined,
                     config: state.config,
+                    allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
                 });
 
                 const nextCard = await buildActiveReviewCard(
@@ -217,6 +245,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 now,
                 deckId: state.deckId ?? undefined,
                 config: state.config,
+                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
 
             const restoredCurrent = await buildActiveReviewCard(
@@ -558,6 +587,33 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
         getNestedNumber(record.new, "perDay"),
     );
 
+    const learnAheadSeconds = firstNumber(
+        record.learnAheadSeconds,
+        record.learn_ahead_secs,
+        record.learnAheadSecs,
+        record.collapseTime,
+    );
+
+    const newReviewMix = normalizeReviewMix(
+        firstKnown(
+            record.newReviewMix,
+            record.new_review_mix,
+            record.newMix,
+            record.new_mix,
+            record.newSpread,
+            record.new_spread,
+        ),
+    );
+
+    const interdayLearningMix = normalizeReviewMix(
+        firstKnown(
+            record.interdayLearningMix,
+            record.interday_learning_mix,
+            record.dayLearnMix,
+            record.day_learn_mix,
+        ),
+    );
+
     const learningSteps = normalizeStepArray(
         firstArray(record.learningSteps, getNestedArray(record.new, "delays")),
     );
@@ -567,10 +623,12 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
 
     const fsrsWeights = normalizeNumericArray(record.fsrsWeights);
 
+    const burySiblings = resolveBurySiblings(record);
+
     return {
         requestRetention: firstNumber(record.requestRetention, record.desiredRetention),
         maximumInterval: firstNumber(record.maximumInterval, record.maxInterval, getNestedNumber(record.rev, "maxIvl")),
-        burySiblings: firstBoolean(record.burySiblings, record.bury),
+        burySiblings,
         leechThreshold: firstNumber(record.leechThreshold, record.leechFails),
         fsrsWeights,
         limits: {
@@ -578,9 +636,79 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
             reviewsPerDay: reviewsPerDay ?? 200,
             learningPerDay: learningPerDay ?? (reviewsPerDay ?? 200),
         },
+        ...(learnAheadSeconds !== undefined ? { learnAheadSeconds } : {}),
+        ...(newReviewMix !== undefined ? { newReviewMix } : {}),
+        ...(interdayLearningMix !== undefined ? { interdayLearningMix } : {}),
         ...(learningSteps ? { learningSteps } : {}),
         ...(relearningSteps ? { relearningSteps } : {}),
     };
+}
+
+function resolveBurySiblings(record: Record<string, unknown>): boolean | undefined {
+    const explicit = firstBoolean(record.burySiblings, record.bury);
+    if (explicit !== undefined) {
+        return explicit;
+    }
+
+    const byQueue = [
+        getNestedBoolean(record.new, "bury"),
+        getNestedBoolean(record.rev, "bury"),
+        firstBoolean(record.buryInterdayLearning, record.bury_interday_learning),
+    ];
+
+    if (byQueue.some((value) => value === true)) {
+        return true;
+    }
+    if (byQueue.some((value) => value === false)) {
+        return false;
+    }
+
+    return undefined;
+}
+
+function normalizeReviewMix(value: unknown): SchedulerReviewMix | undefined {
+    if (value === "mix-with-reviews" || value === "after-reviews" || value === "before-reviews") {
+        return value;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        const normalized = Math.trunc(value);
+        if (normalized === 1) {
+            return "after-reviews";
+        }
+        if (normalized === 2) {
+            return "before-reviews";
+        }
+        return "mix-with-reviews";
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (
+            normalized === "mix" ||
+            normalized === "distribute" ||
+            normalized === "mix_with_reviews" ||
+            normalized === "mixwithreviews"
+        ) {
+            return "mix-with-reviews";
+        }
+        if (
+            normalized === "afterreviews" ||
+            normalized === "reviewsfirst" ||
+            normalized === "reviews_first"
+        ) {
+            return "after-reviews";
+        }
+        if (
+            normalized === "beforereviews" ||
+            normalized === "newfirst" ||
+            normalized === "new_first"
+        ) {
+            return "before-reviews";
+        }
+    }
+
+    return undefined;
 }
 
 function normalizeStepArray(raw: unknown[] | undefined): string[] | undefined {
@@ -645,6 +773,15 @@ function firstArray(...values: unknown[]): unknown[] | undefined {
     return undefined;
 }
 
+function firstKnown(...values: unknown[]): unknown {
+    for (const value of values) {
+        if (value !== undefined && value !== null) {
+            return value;
+        }
+    }
+    return undefined;
+}
+
 function getNestedNumber(value: unknown, key: string): number | undefined {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         return undefined;
@@ -652,6 +789,15 @@ function getNestedNumber(value: unknown, key: string): number | undefined {
 
     const candidate = (value as Record<string, unknown>)[key];
     return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+}
+
+function getNestedBoolean(value: unknown, key: string): boolean | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return undefined;
+    }
+
+    const candidate = (value as Record<string, unknown>)[key];
+    return typeof candidate === "boolean" ? candidate : undefined;
 }
 
 function getNestedArray(value: unknown, key: string): unknown[] | undefined {
@@ -719,6 +865,83 @@ function extractSoundTags(html: string): string[] {
     }
     return tags;
 }
+
+function buildReviewScopeKey(deckId: number | null, today: number): string {
+    return `${deckId === null ? "all" : deckId}:${today}`;
+}
+
+function scopedNewCardsStorageKey(scopeKey: string): string {
+    return `${REVIEW_NEW_SCOPE_STORAGE_PREFIX}:${scopeKey}`;
+}
+
+function loadScopedNewCardIds(scopeKey: string): Set<number> | null {
+    if (typeof window === "undefined") {
+        return null;
+    }
+
+    const storageKey = scopedNewCardsStorageKey(scopeKey);
+    const raw = window.localStorage.getItem(storageKey);
+
+    if (raw === null) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) {
+            window.localStorage.removeItem(storageKey);
+            return null;
+        }
+
+        const ids = parsed
+            .map((value) => {
+                if (typeof value !== "number" || !Number.isFinite(value)) {
+                    return null;
+                }
+
+                const id = Math.trunc(value);
+                return id > 0 ? id : null;
+            })
+            .filter((value): value is number => value !== null);
+
+        return new Set(ids);
+    } catch {
+        window.localStorage.removeItem(storageKey);
+        return null;
+    }
+}
+
+function persistScopedNewCardIds(scopeKey: string, ids: ReadonlySet<number>): void {
+    if (typeof window === "undefined") {
+        return;
+    }
+
+    try {
+        window.localStorage.setItem(scopedNewCardsStorageKey(scopeKey), JSON.stringify([...ids]));
+    } catch {
+        // Ignore quota/privacy errors and keep session-local behavior.
+    }
+}
+
+function clearScopedNewCardIds(scopeKey: string): void {
+    if (typeof window === "undefined") {
+        return;
+    }
+
+    try {
+        window.localStorage.removeItem(scopedNewCardsStorageKey(scopeKey));
+    } catch {
+        // Ignore quota/privacy errors and keep session-local behavior.
+    }
+}
+
+export const __reviewNewScope = {
+    buildReviewScopeKey,
+    scopedNewCardsStorageKey,
+    loadScopedNewCardIds,
+    persistScopedNewCardIds,
+    clearScopedNewCardIds,
+};
 
 export function ratingShortcutToValue(shortcut: string): ReviewRating | null {
     if (shortcut === "1") {

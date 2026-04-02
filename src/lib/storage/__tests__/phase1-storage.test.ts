@@ -154,4 +154,62 @@ describe("Phase 1 storage layer", () => {
         expect(updatedDeckConfig.new_per_day).toBe(20);
         expect(updatedDeckConfig.reviews_per_day).toBe(100);
     });
+
+    it("deleting a deck removes cards in that deck", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+        const revlog = new RevlogRepository(connection);
+
+        const deck = await decks.create("Delete Me");
+        const noteId = Date.now();
+        const cardId = noteId + 1;
+
+        await notes.create({
+            id: noteId,
+            guid: "deck-delete-note-guid",
+            mid: 1001,
+            tags: "",
+            fields: ["Front", "Back"],
+        });
+
+        await cards.create({
+            id: cardId,
+            nid: noteId,
+            did: deck.id,
+            ord: 0,
+            queue: 2,
+            type: 2,
+            due: 0,
+            ivl: 1,
+            factor: 2500,
+        });
+
+        await revlog.insert({
+            id: Date.now() + 1,
+            cid: cardId,
+            ease: 3,
+            ivl: 1,
+            lastIvl: 0,
+            factor: 2500,
+            time: 1000,
+            type: 1,
+        });
+
+        await decks.delete(deck.id);
+
+        const remainingDeck = await decks.getById(deck.id);
+        const deckCardCount = await connection.get<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM cards WHERE did = ?",
+            [deck.id],
+        );
+        const revlogCount = await connection.get<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM revlog WHERE cid = ?",
+            [cardId],
+        );
+
+        expect(remainingDeck).toBeNull();
+        expect(Number(deckCardCount?.count ?? 0)).toBe(0);
+        expect(Number(revlogCount?.count ?? 0)).toBe(0);
+    });
 });

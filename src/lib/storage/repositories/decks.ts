@@ -72,14 +72,16 @@ export class DecksRepository {
         await this.saveDeckMap(deckMap);
     }
 
-    public async delete(deckId: number, moveCardsToDeckId?: number): Promise<void> {
+    public async delete(deckId: number): Promise<void> {
+        await this.connection.run(
+            "DELETE FROM revlog WHERE cid IN (SELECT id FROM cards WHERE did = ?)",
+            [deckId],
+        );
+        await this.connection.run("DELETE FROM cards WHERE did = ?", [deckId]);
+
         const deckMap = await this.getDeckMap();
         delete deckMap[String(deckId)];
         await this.saveDeckMap(deckMap);
-
-        if (moveCardsToDeckId !== undefined) {
-            await this.connection.run("UPDATE cards SET did = ? WHERE did = ?", [moveCardsToDeckId, deckId]);
-        }
     }
 
     public async getHierarchy(): Promise<Record<string, unknown>> {

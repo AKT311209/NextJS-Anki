@@ -3,7 +3,6 @@ import { DeckCard } from "@/components/deck/DeckCard";
 
 export interface DeckTreeProps {
     readonly nodes: readonly DeckTreeNode[];
-    readonly defaultDeckId: number | null;
     readonly onToggleCollapse: (deckId: number) => void;
     readonly onCreateChild: (deckId: number) => void;
     readonly onRename: (deckId: number) => void;
@@ -13,7 +12,6 @@ export interface DeckTreeProps {
 
 export function DeckTree({
     nodes,
-    defaultDeckId,
     onToggleCollapse,
     onCreateChild,
     onRename,
@@ -34,7 +32,6 @@ export function DeckTree({
                 <DeckTreeBranch
                     key={node.deck.id}
                     node={node}
-                    defaultDeckId={defaultDeckId}
                     onToggleCollapse={onToggleCollapse}
                     onCreateChild={onCreateChild}
                     onRename={onRename}
@@ -48,7 +45,6 @@ export function DeckTree({
 
 function DeckTreeBranch({
     node,
-    defaultDeckId,
     onToggleCollapse,
     onCreateChild,
     onRename,
@@ -56,7 +52,6 @@ function DeckTreeBranch({
     onDelete,
 }: {
     readonly node: DeckTreeNode;
-    readonly defaultDeckId: number | null;
     readonly onToggleCollapse: (deckId: number) => void;
     readonly onCreateChild: (deckId: number) => void;
     readonly onRename: (deckId: number) => void;
@@ -67,7 +62,6 @@ function DeckTreeBranch({
         <div className="space-y-2">
             <DeckCard
                 node={node}
-                isDefaultDeck={defaultDeckId === node.deck.id}
                 onToggleCollapse={onToggleCollapse}
                 onCreateChild={onCreateChild}
                 onRename={onRename}
@@ -81,7 +75,6 @@ function DeckTreeBranch({
                         <DeckTreeBranch
                             key={child.deck.id}
                             node={child}
-                            defaultDeckId={defaultDeckId}
                             onToggleCollapse={onToggleCollapse}
                             onCreateChild={onCreateChild}
                             onRename={onRename}

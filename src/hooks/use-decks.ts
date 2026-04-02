@@ -33,7 +33,7 @@ export interface UseDecksResult {
     readonly createDeck: (name: string, parentDeckId?: number | null) => Promise<void>;
     readonly renameDeck: (deckId: number, nextName: string) => Promise<void>;
     readonly moveDeck: (deckId: number, parentDeckId: number | null) => Promise<void>;
-    readonly deleteDeck: (deckId: number, moveCardsToDeckId?: number) => Promise<void>;
+    readonly deleteDeck: (deckId: number) => Promise<void>;
     readonly toggleDeckCollapsed: (deckId: number) => Promise<void>;
 }
 
@@ -203,7 +203,7 @@ export function useDecks(): UseDecksResult {
     );
 
     const deleteDeck = useCallback(
-        async (deckId: number, moveCardsToDeckId?: number) => {
+        async (deckId: number) => {
             if (!collection.connection) {
                 return;
             }
@@ -220,10 +220,10 @@ export function useDecks(): UseDecksResult {
                 .sort((left, right) => right.name.length - left.name.length);
 
             for (const child of children) {
-                await repository.delete(child.id, moveCardsToDeckId);
+                await repository.delete(child.id);
             }
 
-            await repository.delete(deckId, moveCardsToDeckId);
+            await repository.delete(deckId);
             await reload();
         },
         [collection.connection, deckById, reload],

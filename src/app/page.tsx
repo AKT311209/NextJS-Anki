@@ -49,7 +49,6 @@ export default function HomePage() {
 
             <DeckList
                 nodes={decks.tree}
-                defaultDeckId={decks.defaultDeckId}
                 loading={decks.loading}
                 error={decks.error}
                 onCreateRootDeck={async (name) => {
@@ -110,12 +109,11 @@ export default function HomePage() {
                     void decks.moveDeck(deckId, targetId);
                 }}
                 onDelete={(deckId) => {
-                    if (!window.confirm("Delete this deck and all subdecks? Cards will be moved to default deck.")) {
+                    if (!window.confirm("Delete this deck and all subdecks? All cards in those decks will be deleted.")) {
                         return;
                     }
 
-                    const fallback = decks.defaultDeckId ?? undefined;
-                    void decks.deleteDeck(deckId, fallback);
+                    void decks.deleteDeck(deckId);
                 }}
             />
         </main>

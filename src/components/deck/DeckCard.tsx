@@ -3,7 +3,6 @@ import { getDeckLeafName, type DeckTreeNode } from "@/hooks/use-decks";
 
 export interface DeckCardProps {
     readonly node: DeckTreeNode;
-    readonly isDefaultDeck: boolean;
     readonly onToggleCollapse: (deckId: number) => void;
     readonly onCreateChild: (deckId: number) => void;
     readonly onRename: (deckId: number) => void;
@@ -13,7 +12,6 @@ export interface DeckCardProps {
 
 export function DeckCard({
     node,
-    isDefaultDeck,
     onToggleCollapse,
     onCreateChild,
     onRename,
@@ -100,8 +98,7 @@ export function DeckCard({
                 <button
                     type="button"
                     onClick={() => onDelete(node.deck.id)}
-                    disabled={isDefaultDeck}
-                    className="rounded-md border border-rose-700/70 bg-rose-500/10 px-2 py-1 text-rose-200 transition enabled:hover:bg-rose-500/20 disabled:opacity-40"
+                    className="rounded-md border border-rose-700/70 bg-rose-500/10 px-2 py-1 text-rose-200 transition hover:bg-rose-500/20"
                 >
                     Delete
                 </button>

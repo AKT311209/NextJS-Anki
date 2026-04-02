@@ -282,5 +282,168 @@
 	- `npm test` (full suite) ✅
 	- Browser runtime verification via real-page navigation (`/`, `/browse`) showed no wasm fetch/abort errors after fix ✅
 
+- Implemented **Phase 6: Import/Export** end-to-end.
+	- Added full APKG import pipeline in `src/lib/import-export/apkg-reader.ts`:
+		- ZIP parsing via `fflate`
+		- Embedded `collection.anki2`/`collection.anki21` SQLite parsing via `sql.js`
+		- Data extraction for `col`, `notes`, `cards`, `revlog`
+		- GUID-based duplicate note detection on import
+		- Deck/notetype/deck-config merge logic with ID remapping where needed
+		- Media map parsing and media-file import integration
+	- Added full APKG export pipeline in `src/lib/import-export/apkg-writer.ts`:
+		- Deck-scoped or full-collection export
+		- Temporary Anki-compatible SQLite database generation using existing schema migration
+		- Filtered `models`/`decks`/`dconf` payloads for exported scope
+		- Media reference collection + archive packaging as `.apkg`
+		- Browser download helper
+	- Added CSV import support in `src/lib/import-export/csv-import.ts`:
+		- CSV/TSV parser with quote handling, delimiter auto-detection, comment/tag preamble handling
+		- Preview-ready parsed output (`headers`, `rows`, `tagsToAdd`)
+		- Field-mapping-driven note/card import with duplicate detection
+	- Implemented media persistence helpers in `src/lib/import-export/media-handler.ts`:
+		- OPFS-backed media writes/reads when available
+		- In-memory fallback for unsupported/test environments
+		- Conflict strategies (`skip`, `overwrite`) and summary reporting
+	- Implemented media domain helpers:
+		- `src/lib/media/store.ts` (put/get/list wrappers)
+		- `src/lib/media/references.ts` (image/sound reference extraction)
+	- Implemented import worker parsing APIs in `src/workers/import.worker.ts`:
+		- `parseApkg()`
+		- `parseCsv()`
+	- Replaced `src/app/import/page.tsx` placeholder with full UI:
+		- APKG import with conflict strategy + progress log + summary
+		- CSV preview/import workflow with delimiter/header controls and field mapping
+		- APKG export controls (all decks or selected deck, include media)
+	- Added Phase 6 tests in `src/lib/import-export/__tests__/phase6-import-export.test.ts`:
+		- APKG export → parse → import roundtrip
+		- Duplicate GUID re-import behavior
+		- CSV metadata parsing + duplicate row handling
+		- Tab-delimiter detection
+	- Dependency updates:
+		- Added `fflate` to support APKG ZIP read/write in browser/tests.
+
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run lint` ✅
+	- `npm test` ✅ (full suite, including new Phase 6 tests)
+
+- Implemented **Turbopack migration** and aligned planning docs.
+	- Switched npm scripts in `package.json`:
+		- `dev` → `next dev --turbopack`
+		- `build` → `next build --turbopack`
+	- Removed webpack-only WASM configuration from `next.config.ts`.
+		- The app now relies on route-served SQL.js WASM assets (`/sql-wasm.wasm`, `/sql-wasm-browser.wasm`), which keeps runtime behavior bundler-agnostic.
+	- Performed Turbopack smoke checks:
+		- `npx next build --turbopack` ✅
+		- `npx next dev --turbopack --port 4010` startup ✅
+	- Updated planning documentation:
+		- `DOCS/plan.md`
+			- Tech stack framework row updated to **Next.js 16 (App Router + Turbopack)**.
+			- Phase 0 task updated to call out **Turbopack-compatible WASM loading**.
+		- `DOCS/implementation.md`
+			- Step 1 bootstrap task updated to **Next.js 16 + Turbopack** baseline.
+
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run lint` ✅
+	- `npm test` ✅
+	- `npm run build` ✅ (Turbopack)
+	- `npm run dev -- --port 4011` ✅ startup smoke-check (Turbopack)
+
+- Fixed review queue counter regressions in Phase 4/Phase 2 integration.
+	- Problem addressed:
+		- New-card counter remained artificially fixed during study because queue rebuilds backfilled fresh New cards after each answer.
+		- Learning counter could drop after `Again` because counts only considered learning cards due *right now*, excluding deferred learning cards.
+	- Implemented queue/session fixes:
+		- Added optional session-scoping field `allowedNewCardIds` to `QueueBuildRequest` in `src/lib/types/scheduler.ts`.
+		- Updated `src/lib/scheduler/queue.ts`:
+			- New-card selection now respects `allowedNewCardIds` when provided, preventing per-answer backfill outside the session’s initial new-card pool.
+			- Learning counts now include deferred learning cards (not only immediately due cards) while study order remains due-only.
+			- Added `selectCardsByQueue()` helper for full-queue counting queries.
+		- Updated `src/hooks/use-review.ts`:
+			- Captures initial session New-card IDs on session start.
+			- Passes those IDs into subsequent queue rebuilds (answer + undo paths) to keep New counts/session scope stable and decrementing.
+	- Added regression tests in `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`:
+		- `keeps new counts from backfilling outside session scope`
+		- `keeps deferred learning cards in learning count totals`
+	- Verification completed:
+		- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm test -- src/stores/__tests__/phase4-review-store.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx` ✅
+		- `npm run typecheck` ✅
+		- `npm run lint` ✅
+
+	- Reanalyzed upstream Anki Desktop session handling for **New / Learning / Review** and aligned queue/session behavior in this project.
+		- Reviewed `ANKIDESKTOP/rslib/src/scheduler/queue/*`, `scheduler/states/*`, `scheduler/answering/mod.rs`, and `deck_config.proto` to confirm canonical behavior:
+			- Intraday learning is split into **due-now** and **learn-ahead** windows.
+			- Main queue is composed from interday learning + review + new, with configurable mix modes.
+			- Interday learning consumes review limits before review cards.
+		- Implemented parity-focused scheduler config surface:
+			- Added `newReviewMix`, `interdayLearningMix`, and `learnAheadSeconds` to `SchedulerConfig` with Anki-aligned defaults (`mix-with-reviews`, `mix-with-reviews`, `1200s`).
+			- Updated config resolver normalization in `src/lib/scheduler/params.ts`.
+		- Reworked queue assembly in `src/lib/scheduler/queue.ts`:
+			- Session order now follows Anki structure: **intraday-now → main queue → intraday-ahead**.
+			- Added review-mix merging/interspersing algorithm equivalent to upstream `Intersperser` behavior.
+			- Applied review-limit consumption ordering where interday learning takes review slots first.
+			- Kept session-scoped `allowedNewCardIds` filtering to prevent new-card backfill during queue rebuilds.
+		- Expanded Anki-compatible config parsing in `src/hooks/use-review.ts`:
+			- Reads mix/cutoff settings from both modern and legacy keys (`newMix`, `interdayLearningMix`, `newSpread`, `collapseTime`, etc.).
+			- Improved bury-setting inference from deck-level nested config fields.
+		- Updated bootstrap defaults in `src/lib/storage/bootstrap.ts` to seed `newMix`, `interdayLearningMix`, `collapseTime`, and `newSpread`.
+		- Added/updated scheduler regression tests in `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`:
+			- learn-ahead cutoff and ordering behavior
+			- review/new interspersing behavior
+			- interday learning consumption of review limits
+		- Fixed unrelated APKG import page type/syntax issues discovered during verification in `src/app/import/page.tsx`.
+
+	- Verification completed:
+		- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm test -- src/stores/__tests__/phase4-review-store.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx` ✅
+		- `npm run typecheck && npm run lint && npm test` ✅
+
+	- Updated deck deletion and APKG duplicate-card import behavior.
+		- Deck deletion now removes cards in the deleted deck/subdecks instead of moving them:
+			- `src/lib/storage/repositories/decks.ts`
+				- `DecksRepository.delete()` now deletes matching `cards` and related `revlog` rows before removing deck metadata.
+			- `src/hooks/use-decks.ts`
+				- Removed `moveCardsToDeckId` from `deleteDeck()` API and descendant deletion path.
+			- `src/app/page.tsx`
+				- Updated delete confirmation copy to reflect permanent card deletion.
+		- Allowed deleting the “Default” deck from the home deck tree UI:
+			- `src/components/deck/DeckCard.tsx`
+				- Removed default-deck delete disable guard.
+			- `src/components/deck/DeckTree.tsx`, `src/components/deck/DeckList.tsx`
+				- Removed unused `defaultDeckId` prop plumbing tied to delete disable behavior.
+		- APKG import now allows cards from duplicate GUID notes and tracks them separately:
+			- `src/lib/import-export/apkg-reader.ts`
+				- Duplicate notes still map by GUID, but their cards are now imported and counted under `imported.cardsFromDuplicateNotes`.
+				- Removed skipped metric for cards-from-duplicates.
+			- `src/app/import/page.tsx`
+				- Updated import summary copy/metrics to show imported cards from duplicate notes.
+		- Tests updated/added:
+			- `src/lib/storage/__tests__/phase1-storage.test.ts`
+				- Added regression test: deleting a deck removes its cards (and dependent revlog rows).
+			- `src/components/deck/__tests__/phase5-deck-ui.test.tsx`
+				- Verifies delete action is available/callable for the Default deck card.
+			- `src/lib/import-export/__tests__/phase6-import-export.test.ts`
+				- Verifies duplicate GUID re-import keeps one note but imports additional cards/revlog and tracks duplicate-note card count.
+
+	- Verification completed:
+		- `npm test -- src/lib/storage/__tests__/phase1-storage.test.ts src/components/deck/__tests__/phase5-deck-ui.test.tsx src/lib/import-export/__tests__/phase6-import-export.test.ts` ✅
+
+	- Fixed deck refresh resetting today-scoped New/Learning progress in review sessions.
+		- Updated `src/hooks/use-review.ts`:
+			- Added deck/day review scope keys using `toDayNumber(now)` so New-card scope is today-based.
+			- Persisted scoped New-card IDs in browser storage and reused them on session reload/refresh.
+			- Applied scoped IDs during initial queue build to prevent New-card backfill to full daily limit after refresh.
+			- Kept fallback behavior safe when storage is unavailable or malformed.
+		- Added regression coverage in `src/hooks/__tests__/phase4-review-scope.test.ts`:
+			- Persists scoped New IDs by deck/day.
+			- Verifies day isolation.
+			- Verifies malformed persisted payload cleanup.
+
+	- Verification completed:
+		- `npm test -- src/hooks/__tests__/phase4-review-scope.test.ts src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/stores/__tests__/phase4-review-store.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx` ✅
+		- `npm run typecheck && npm run lint` ✅
+
 
 

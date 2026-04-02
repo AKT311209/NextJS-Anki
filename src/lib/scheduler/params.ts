@@ -1,5 +1,9 @@
 import { default_w, generatorParameters, type FSRSParameters, type StepUnit } from "ts-fsrs";
-import { DEFAULT_SCHEDULER_CONFIG, type SchedulerConfig } from "@/lib/types/scheduler";
+import {
+    DEFAULT_SCHEDULER_CONFIG,
+    type SchedulerConfig,
+    type SchedulerReviewMix,
+} from "@/lib/types/scheduler";
 
 export function resolveSchedulerConfig(overrides: Partial<SchedulerConfig> = {}): SchedulerConfig {
     const base = DEFAULT_SCHEDULER_CONFIG;
@@ -24,6 +28,9 @@ export function resolveSchedulerConfig(overrides: Partial<SchedulerConfig> = {})
         easyInterval: Math.max(1, Math.trunc(overrides.easyInterval ?? base.easyInterval)),
         startingEase: Math.max(1300, Math.trunc(overrides.startingEase ?? base.startingEase)),
         leechThreshold: Math.max(1, Math.trunc(overrides.leechThreshold ?? base.leechThreshold)),
+        newReviewMix: normalizeReviewMix(overrides.newReviewMix ?? base.newReviewMix),
+        interdayLearningMix: normalizeReviewMix(overrides.interdayLearningMix ?? base.interdayLearningMix),
+        learnAheadSeconds: Math.max(0, Math.trunc(overrides.learnAheadSeconds ?? base.learnAheadSeconds)),
         limits: {
             newPerDay: Math.max(0, Math.trunc(mergedLimits.newPerDay)),
             reviewsPerDay: Math.max(0, Math.trunc(mergedLimits.reviewsPerDay)),
@@ -172,4 +179,11 @@ function clamp(value: number, min: number, max: number): number {
         return max;
     }
     return value;
+}
+
+function normalizeReviewMix(mode: SchedulerReviewMix): SchedulerReviewMix {
+    if (mode === "after-reviews" || mode === "before-reviews") {
+        return mode;
+    }
+    return "mix-with-reviews";
 }

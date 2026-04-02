@@ -19,7 +19,7 @@
 
 | Layer | Technology | Why |
 |-------|-----------|-----|
-| Framework | Next.js 15 (App Router) | SSR for initial load, client for all logic |
+| Framework | Next.js 16 (App Router + Turbopack) | Fast incremental builds and HMR while keeping client-first app logic |
 | Language | TypeScript (strict) | Type safety across entire codebase |
 | UI | shadcn/ui + TailwindCSS v4 | Accessible, composable, performant |
 | State | Zustand | Lightweight, works with Web Workers |
@@ -200,7 +200,7 @@ This ordering preserves the original architecture while reducing early project r
 **Tasks:**
 1. `npx create-next-app@latest` with TypeScript, TailwindCSS, App Router
 2. Install core deps: `ts-fsrs`, `wa-sqlite`, `sql.js`, `zustand`, `comlink`, `shadcn/ui`
-3. Configure `next.config.js` for WASM support, Web Workers, headers for OPFS
+3. Configure `next.config.ts` for Turbopack-compatible WASM loading, Web Workers, and headers for OPFS
 4. Set up Vitest + Playwright
 5. Create the directory structure above
 6. Configure PWA manifest + next-pwa
