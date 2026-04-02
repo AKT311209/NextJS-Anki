@@ -194,5 +194,93 @@
 		- `npm run lint` ✅
 		- `npm test` ✅
 
+- Implemented **Phase 5: Deck & Note Management (UI)**.
+	- Replaced Phase 5 placeholders with end-to-end management features across deck list, note editor, browser, notetype management, and deck options.
+	- Implemented deck management on the home route:
+		- `src/app/page.tsx` now renders a live deck dashboard and actions.
+		- Added real deck components in `src/components/deck/`:
+			- `DeckList.tsx` (create root deck + loading/error presentation)
+			- `DeckTree.tsx` (hierarchical recursive rendering)
+			- `DeckCard.tsx` (counts + CRUD action controls + navigation)
+		- Implemented `src/hooks/use-decks.ts` with repository-backed deck CRUD, move/rename propagation for subdecks, collapse toggles, and due/new/learn/review/total counts.
+	- Implemented note editing workflow and notetype management:
+		- `src/app/editor/[noteId]/page.tsx` now provides:
+			- create/edit note flow
+			- duplicate detection on first field
+			- deck + notetype selection
+			- live card preview rendering via template engine
+			- card generation/synchronization by template ord on save
+			- embedded notetype manager actions (create/save/delete)
+		- Replaced editor placeholders in `src/components/editor/`:
+			- `FieldEditor.tsx` (field editing + formatting/media snippets)
+			- `TagEditor.tsx` (chip-based tag editing + suggestions)
+			- `NoteEditor.tsx` (full editor layout + preview + save controls)
+			- `TemplateEditor.tsx` (field/template/CSS editor with reorder and cloze support)
+	- Implemented card browser + search:
+		- `src/app/browse/page.tsx` now serves `CardBrowser` with server-provided initial query params.
+		- Replaced browser placeholders in `src/components/browser/`:
+			- `SearchBar.tsx`
+			- `CardTable.tsx`
+			- `CardBrowser.tsx` (bulk actions: suspend/bury/delete/move/flag, selection, pagination, preview, info panel)
+		- Implemented `src/hooks/use-search.ts` with:
+			- search execution against SQLite (cards + notes join)
+			- sort/pagination state
+			- card preview rendering
+			- bulk action persistence
+		- Implemented Phase 5 search engine modules:
+			- `src/lib/search/nodes.ts`
+			- `src/lib/search/parser.ts`
+			- `src/lib/search/sql-builder.ts`
+		- Search supports text + key operators (including `deck:`, `note:`, `tag:`, `is:*`, `flag:*`, IDs, AND/OR, negation).
+	- Implemented deck detail and deck options routes:
+		- `src/app/deck/[deckId]/page.tsx` now displays live deck metadata/counts and navigation actions.
+		- `src/app/deck/[deckId]/options/page.tsx` now supports:
+			- daily limits
+			- learning/relearning steps
+			- retention/max interval/fuzz/bury settings
+			- deck-scoped FSRS optimization from revlog history via `optimizeSchedulerParameters`
+	- Added Phase 5 collection bootstrap helper:
+		- `src/lib/storage/bootstrap.ts`
+		- Ensures default deck/config and built-in notetypes (Basic, Basic+Reverse, Cloze) exist.
+	- Build hardening adjustment:
+		- Updated `src/lib/storage/database.ts` OPFS probe to avoid problematic wa-sqlite async wasm import path during webpack build.
+
+- Added Phase 5 tests:
+	- `src/lib/search/__tests__/phase5-search.test.ts`
+	- `src/components/deck/__tests__/phase5-deck-ui.test.tsx`
+	- `src/components/browser/__tests__/phase5-browser-ui.test.tsx`
+	- `src/components/editor/__tests__/phase5-note-editor-ui.test.tsx`
+
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run lint` ✅
+	- `npm test` ✅
+	- `npm run build` ✅
+
+## 2026-04-02
+
+- Fixed runtime SQL.js WebAssembly loading failures in dev/browser pages (`/`, `/browse`):
+	- Updated `src/lib/storage/database.ts` to provide an explicit `locateFile` resolver for SQL.js, including support for both wasm filenames used by sql.js builds:
+		- `sql-wasm.wasm`
+		- `sql-wasm-browser.wasm`
+	- Added runtime-aware path resolution:
+		- Node/test runtime resolves to `node_modules/sql.js/dist/<file>.wasm`
+		- Browser runtime resolves to app-served paths (`/sql-wasm.wasm`, `/sql-wasm-browser.wasm`)
+- Added App Router route handlers to serve SQL.js wasm assets with the correct MIME type and cache headers:
+	- `src/app/sql-wasm.wasm/route.ts`
+	- `src/app/sql-wasm-browser.wasm/route.ts`
+- Reduced development-noise from PWA plugin logs:
+	- Updated `next.config.ts` to bypass `next-pwa` wrapping in development and apply it only outside dev mode.
+
+- Key implementation decisions:
+	- Avoided webpack `?url` wasm import for sql.js because it triggered a module-resolution failure in Next 16 webpack (`Can't resolve 'a'`).
+	- Route-based wasm serving keeps runtime deterministic and avoids requiring committed binary copies under `public/`.
+
+- Verification completed:
+	- `npm run typecheck` ✅
+	- Targeted regression tests (`phase1-storage`, `phase2-scheduler`) ✅
+	- `npm test` (full suite) ✅
+	- Browser runtime verification via real-page navigation (`/`, `/browse`) showed no wasm fetch/abort errors after fix ✅
+
 
 

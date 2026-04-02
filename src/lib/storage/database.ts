@@ -10,6 +10,24 @@ import { registerSqlFunctions } from "@/lib/storage/sql-functions";
 
 export type QueryRow = Record<string, SqlValue>;
 
+function resolveSqlJsWasmPath(fileName: string): string {
+    const isNodeRuntime =
+        typeof process !== "undefined" &&
+        typeof process.versions === "object" &&
+        Boolean(process.versions?.node) &&
+        typeof process.cwd === "function";
+
+    if (isNodeRuntime) {
+        return `${process.cwd()}/node_modules/sql.js/dist/${fileName}`;
+    }
+
+    if (fileName === "sql-wasm-browser.wasm") {
+        return "/sql-wasm-browser.wasm";
+    }
+
+    return "/sql-wasm.wasm";
+}
+
 export interface CollectionDatabaseConnection {
     readonly id: string;
     select<T = QueryRow>(sql: string, params?: BindParams): Promise<T[]>;
@@ -111,7 +129,14 @@ export class CollectionDatabaseManager {
             this.opfsProbeSucceeded = await this.probeWaSqliteOpfsSupport();
         }
 
-        this.sqlJs = await initSqlJs();
+        this.sqlJs = await initSqlJs({
+            locateFile: (fileName) => {
+                if (fileName.endsWith(".wasm")) {
+                    return resolveSqlJsWasmPath(fileName);
+                }
+                return fileName;
+            },
+        });
         const persistedBytes = this.options.initialBytes ?? (await this.readPersistedBytes());
         this.database = new this.sqlJs.Database(persistedBytes ?? undefined);
 
@@ -334,12 +359,7 @@ export class CollectionDatabaseManager {
         }
 
         try {
-            const opfsExampleModulePath = "wa-sqlite/src/examples/OriginPrivateFileSystemVFS.js";
-            await Promise.all([
-                import("wa-sqlite"),
-                import("wa-sqlite/dist/wa-sqlite-async.mjs"),
-                import(opfsExampleModulePath),
-            ]);
+            await import("wa-sqlite");
             return true;
         } catch {
             return false;
