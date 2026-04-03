@@ -11,6 +11,8 @@ export interface ReviewCardProps {
     readonly templateName?: string;
     readonly cardOrdinalLabel?: string;
     readonly onRevealAnswer?: () => void;
+    readonly autoPlayAudio?: boolean;
+    readonly onAudioPlaybackStateChange?: (isPlaying: boolean) => void;
     readonly className?: string;
 }
 
@@ -22,6 +24,8 @@ export function ReviewCard({
     templateName,
     cardOrdinalLabel,
     onRevealAnswer,
+    autoPlayAudio = true,
+    onAudioPlaybackStateChange,
     className,
 }: ReviewCardProps) {
     return (
@@ -41,7 +45,14 @@ export function ReviewCard({
                 </div>
             </header>
 
-            <CardHtml html={isAnswerRevealed ? answerHtml : questionHtml} css={css} className="min-h-44" nightMode />
+            <CardHtml
+                html={isAnswerRevealed ? answerHtml : questionHtml}
+                css={css}
+                className="min-h-44"
+                nightMode
+                autoPlayAudio={autoPlayAudio}
+                onAudioPlaybackStateChange={onAudioPlaybackStateChange}
+            />
 
             {!isAnswerRevealed ? (
                 <footer className="mt-6 flex justify-center">

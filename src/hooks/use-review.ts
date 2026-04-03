@@ -21,9 +21,14 @@ import {
     REVIEW_RATINGS,
     type QueueBuildResult,
     type ReviewRating,
+    type SchedulerAnswerAction,
     type SchedulerConfig,
+    type SchedulerNewCardGatherPriority,
+    type SchedulerNewCardSortOrder,
+    type SchedulerQuestionAction,
     type SchedulerPreview,
     type SchedulerReviewMix,
+    type SchedulerReviewSortOrder,
 } from "@/lib/types/scheduler";
 import { useReviewStore, type ActiveReviewCard } from "@/stores/review-store";
 
@@ -36,6 +41,7 @@ export interface UseReviewResult {
     readonly ready: boolean;
     readonly loading: boolean;
     readonly error: string | null;
+    readonly config: SchedulerConfig;
     readonly stage: "idle" | "loading" | "question" | "answer" | "completed" | "error";
     readonly hasCard: boolean;
     readonly currentCard: ActiveReviewCard | null;
@@ -52,6 +58,7 @@ export interface UseReviewResult {
     readonly canUndo: boolean;
     readonly revealAnswer: () => void;
     readonly answer: (rating: ReviewRating) => Promise<void>;
+    readonly buryCurrentCard: () => Promise<void>;
     readonly undo: () => Promise<void>;
     readonly reload: () => Promise<void>;
 }
@@ -110,6 +117,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const revealAnswer = useReviewStore((state) => state.revealAnswer);
     const recordAnswer = useReviewStore((state) => state.recordAnswer);
     const applyUndo = useReviewStore((state) => state.applyUndo);
+    const syncQueue = useReviewStore((state) => state.syncQueue);
     const setError = useReviewStore((state) => state.setError);
     const reset = useReviewStore((state) => state.reset);
     const [completionState, setCompletionState] = useState<ReviewCompletionState>(EMPTY_REVIEW_COMPLETION_STATE);
@@ -312,6 +320,62 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
         }
     }, [applyUndo, collection.connection, nowProvider, setError]);
 
+    const buryCurrentCard = useCallback(async () => {
+        const connection = collection.connection;
+        if (!connection) {
+            return;
+        }
+
+        const state = useReviewStore.getState();
+        const current = state.currentCard;
+        if (!current) {
+            return;
+        }
+
+        try {
+            const now = nowProvider();
+            const cards = new CardsRepository(connection);
+            await cards.update(current.card.id, {
+                queue: CardQueue.UserBuried,
+                mod: now.getTime(),
+            });
+
+            const queueBuilder = new SchedulerQueueBuilder(connection);
+            const queueResult = await queueBuilder.buildQueue({
+                now,
+                deckId: state.deckId ?? undefined,
+                config: state.config,
+                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
+            });
+
+            const latestCompletion = await loadReviewCompletionState(
+                connection,
+                state.deckId,
+                now,
+                state.config.learnAheadSeconds,
+            );
+
+            const nextCard = await buildActiveReviewCard(
+                connection,
+                queueResult.cards[0],
+                state.config,
+                now,
+                engineRef.current,
+            );
+
+            syncQueue({
+                queueResult,
+                currentCard: nextCard,
+            });
+            setCompletionState(latestCompletion);
+
+            shownAtMsRef.current = now.getTime();
+        } catch (cause) {
+            const message = cause instanceof Error ? cause.message : "Failed to bury current card.";
+            setError(message);
+        }
+    }, [collection.connection, nowProvider, setError, syncQueue]);
+
     useEffect(() => {
         if (collection.error) {
             setError(collection.error);
@@ -398,6 +462,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             ready: collection.ready,
             loading: collection.loading || stage === "loading",
             error: reviewError ?? collection.error,
+            config: schedulerConfig,
             stage,
             hasCard: Boolean(currentCard),
             currentCard,
@@ -410,15 +475,18 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             canUndo: history.length > 0,
             revealAnswer,
             answer,
+            buryCurrentCard,
             undo,
             reload: initializeSession,
         }),
         [
             answer,
             answered,
+            buryCurrentCard,
             collection.error,
             collection.loading,
             collection.ready,
+            schedulerConfig,
             counts,
             completionState.dueLaterToday,
             completionState.nextCardDueInMinutes,
@@ -748,6 +816,28 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
         ),
     );
 
+    const newCardGatherPriority = normalizeNewCardGatherPriority(
+        firstKnown(
+            record.newCardGatherPriority,
+            record.new_card_gather_priority,
+            record.newGatherPriority,
+            record.new_gather_priority,
+        ),
+    );
+
+    const newCardSortOrder = normalizeNewCardSortOrder(
+        firstKnown(
+            record.newCardSortOrder,
+            record.new_card_sort_order,
+            record.newSortOrder,
+            record.new_sort_order,
+        ),
+    );
+
+    const reviewSortOrder = normalizeReviewSortOrder(
+        firstKnown(record.reviewSortOrder, record.review_order, record.reviewOrder),
+    );
+
     const learningSteps = normalizeStepArray(
         firstArray(record.learningSteps, getNestedArray(record.new, "delays")),
     );
@@ -756,6 +846,60 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
     );
 
     const fsrsWeights = normalizeNumericArray(record.fsrsWeights);
+
+    const disableAutoplay = firstBoolean(
+        record.disableAutoplay,
+        record.disable_autoplay,
+        invertBoolean(record.autoplay),
+    );
+
+    const skipQuestionWhenReplayingAnswer = firstBoolean(
+        record.skipQuestionWhenReplayingAnswer,
+        record.skip_question_when_replaying_answer,
+        invertBoolean(record.replayq),
+    );
+
+    const capAnswerTimeToSecs = firstNumber(
+        record.capAnswerTimeToSecs,
+        record.cap_answer_time_to_secs,
+        record.maxTaken,
+        record.max_taken,
+    );
+
+    const showTimer = firstBoolean(
+        record.showTimer,
+        record.show_timer,
+        numberToBoolean(record.timer),
+    );
+
+    const stopTimerOnAnswer = firstBoolean(
+        record.stopTimerOnAnswer,
+        record.stop_timer_on_answer,
+    );
+
+    const secondsToShowQuestion = firstNumber(
+        record.secondsToShowQuestion,
+        record.seconds_to_show_question,
+    );
+
+    const secondsToShowAnswer = firstNumber(
+        record.secondsToShowAnswer,
+        record.seconds_to_show_answer,
+    );
+
+    const waitForAudio = firstBoolean(record.waitForAudio, record.wait_for_audio);
+
+    const questionAction = normalizeQuestionAction(
+        firstKnown(record.questionAction, record.question_action),
+    );
+
+    const answerAction = normalizeAnswerAction(
+        firstKnown(record.answerAction, record.answer_action),
+    );
+
+    const easyDaysPercentages = normalizeEasyDaysPercentages(
+        firstKnown(record.easyDaysPercentages, record.easy_days_percentages),
+    );
 
     const bury = resolveBuryOptions(record);
     const leechAction = normalizeLeechAction(
@@ -790,8 +934,22 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
         ...(learnAheadSeconds !== undefined ? { learnAheadSeconds } : {}),
         ...(newReviewMix !== undefined ? { newReviewMix } : {}),
         ...(interdayLearningMix !== undefined ? { interdayLearningMix } : {}),
+        ...(newCardGatherPriority !== undefined ? { newCardGatherPriority } : {}),
+        ...(newCardSortOrder !== undefined ? { newCardSortOrder } : {}),
         ...(learningSteps ? { learningSteps } : {}),
         ...(relearningSteps ? { relearningSteps } : {}),
+        ...(reviewSortOrder !== undefined ? { reviewSortOrder } : {}),
+        ...(disableAutoplay !== undefined ? { disableAutoplay } : {}),
+        ...(skipQuestionWhenReplayingAnswer !== undefined ? { skipQuestionWhenReplayingAnswer } : {}),
+        ...(capAnswerTimeToSecs !== undefined ? { capAnswerTimeToSecs } : {}),
+        ...(showTimer !== undefined ? { showTimer } : {}),
+        ...(stopTimerOnAnswer !== undefined ? { stopTimerOnAnswer } : {}),
+        ...(secondsToShowQuestion !== undefined ? { secondsToShowQuestion } : {}),
+        ...(secondsToShowAnswer !== undefined ? { secondsToShowAnswer } : {}),
+        ...(waitForAudio !== undefined ? { waitForAudio } : {}),
+        ...(questionAction !== undefined ? { questionAction } : {}),
+        ...(answerAction !== undefined ? { answerAction } : {}),
+        ...(easyDaysPercentages ? { easyDaysPercentages } : {}),
     };
 }
 
@@ -893,6 +1051,280 @@ function normalizeReviewMix(value: unknown): SchedulerReviewMix | undefined {
     return undefined;
 }
 
+function normalizeNewCardGatherPriority(value: unknown): SchedulerNewCardGatherPriority | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        switch (Math.trunc(value)) {
+            case 5:
+                return "deck-then-random-notes";
+            case 1:
+                return "lowest-position";
+            case 2:
+                return "highest-position";
+            case 3:
+                return "random-notes";
+            case 4:
+                return "random-cards";
+            default:
+                return "deck";
+        }
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["deck", "new_card_gather_priority_deck"].includes(normalized)) {
+            return "deck";
+        }
+        if (
+            [
+                "deck-then-random-notes",
+                "deck_then_random_notes",
+                "new_card_gather_priority_deck_then_random_notes",
+            ].includes(normalized)
+        ) {
+            return "deck-then-random-notes";
+        }
+        if (
+            [
+                "lowest-position",
+                "lowest_position",
+                "new_card_gather_priority_lowest_position",
+            ].includes(normalized)
+        ) {
+            return "lowest-position";
+        }
+        if (
+            [
+                "highest-position",
+                "highest_position",
+                "new_card_gather_priority_highest_position",
+            ].includes(normalized)
+        ) {
+            return "highest-position";
+        }
+        if (
+            [
+                "random-notes",
+                "random_notes",
+                "new_card_gather_priority_random_notes",
+            ].includes(normalized)
+        ) {
+            return "random-notes";
+        }
+        if (
+            [
+                "random-cards",
+                "random_cards",
+                "new_card_gather_priority_random_cards",
+            ].includes(normalized)
+        ) {
+            return "random-cards";
+        }
+    }
+
+    return undefined;
+}
+
+function normalizeNewCardSortOrder(value: unknown): SchedulerNewCardSortOrder | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        switch (Math.trunc(value)) {
+            case 1:
+                return "no-sort";
+            case 2:
+                return "template-then-random";
+            case 3:
+                return "random-note-then-template";
+            case 4:
+                return "random-card";
+            default:
+                return "template";
+        }
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["template", "new_card_sort_order_template"].includes(normalized)) {
+            return "template";
+        }
+        if (["no-sort", "no_sort", "new_card_sort_order_no_sort"].includes(normalized)) {
+            return "no-sort";
+        }
+        if (
+            [
+                "template-then-random",
+                "template_then_random",
+                "new_card_sort_order_template_then_random",
+            ].includes(normalized)
+        ) {
+            return "template-then-random";
+        }
+        if (
+            [
+                "random-note-then-template",
+                "random_note_then_template",
+                "new_card_sort_order_random_note_then_template",
+            ].includes(normalized)
+        ) {
+            return "random-note-then-template";
+        }
+        if (["random-card", "random_card", "new_card_sort_order_random_card"].includes(normalized)) {
+            return "random-card";
+        }
+    }
+
+    return undefined;
+}
+
+function normalizeReviewSortOrder(value: unknown): SchedulerReviewSortOrder | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        switch (Math.trunc(value)) {
+            case 1:
+                return "due-then-deck";
+            case 2:
+                return "deck-then-due";
+            case 3:
+                return "interval-ascending";
+            case 4:
+                return "interval-descending";
+            case 5:
+                return "ease-ascending";
+            case 6:
+                return "ease-descending";
+            case 7:
+                return "retrievability-ascending";
+            case 11:
+                return "retrievability-descending";
+            case 12:
+                return "relative-overdueness";
+            case 8:
+                return "random";
+            case 9:
+                return "added";
+            case 10:
+                return "reverse-added";
+            default:
+                return "due";
+        }
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["due", "day", "review_card_order_day"].includes(normalized)) {
+            return "due";
+        }
+        if (["due-then-deck", "day_then_deck", "review_card_order_day_then_deck"].includes(normalized)) {
+            return "due-then-deck";
+        }
+        if (["deck-then-due", "deck_then_day", "review_card_order_deck_then_day"].includes(normalized)) {
+            return "deck-then-due";
+        }
+        if (["interval-ascending", "intervals_ascending", "review_card_order_intervals_ascending"].includes(normalized)) {
+            return "interval-ascending";
+        }
+        if (["interval-descending", "intervals_descending", "review_card_order_intervals_descending"].includes(normalized)) {
+            return "interval-descending";
+        }
+        if (["ease-ascending", "review_card_order_ease_ascending"].includes(normalized)) {
+            return "ease-ascending";
+        }
+        if (["ease-descending", "review_card_order_ease_descending"].includes(normalized)) {
+            return "ease-descending";
+        }
+        if (["retrievability-ascending", "retrievability_ascending", "review_card_order_retrievability_ascending"].includes(normalized)) {
+            return "retrievability-ascending";
+        }
+        if (["retrievability-descending", "retrievability_descending", "review_card_order_retrievability_descending"].includes(normalized)) {
+            return "retrievability-descending";
+        }
+        if (["relative-overdueness", "relative_overdueness", "review_card_order_relative_overdueness"].includes(normalized)) {
+            return "relative-overdueness";
+        }
+        if (["random", "review_card_order_random"].includes(normalized)) {
+            return "random";
+        }
+        if (["added", "review_card_order_added"].includes(normalized)) {
+            return "added";
+        }
+        if (["reverse-added", "reverse_added", "review_card_order_reverse_added"].includes(normalized)) {
+            return "reverse-added";
+        }
+    }
+
+    return undefined;
+}
+
+function normalizeQuestionAction(value: unknown): SchedulerQuestionAction | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.trunc(value) === 1 ? "show-reminder" : "show-answer";
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["show-reminder", "show_reminder", "question_action_show_reminder"].includes(normalized)) {
+            return "show-reminder";
+        }
+        if (["show-answer", "show_answer", "question_action_show_answer"].includes(normalized)) {
+            return "show-answer";
+        }
+    }
+
+    return undefined;
+}
+
+function normalizeAnswerAction(value: unknown): SchedulerAnswerAction | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        switch (Math.trunc(value)) {
+            case 1:
+                return "answer-again";
+            case 2:
+                return "answer-good";
+            case 3:
+                return "answer-hard";
+            case 4:
+                return "show-reminder";
+            default:
+                return "bury-card";
+        }
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["answer-again", "answer_again", "answer_action_answer_again"].includes(normalized)) {
+            return "answer-again";
+        }
+        if (["answer-good", "answer_good", "answer_action_answer_good"].includes(normalized)) {
+            return "answer-good";
+        }
+        if (["answer-hard", "answer_hard", "answer_action_answer_hard"].includes(normalized)) {
+            return "answer-hard";
+        }
+        if (["show-reminder", "show_reminder", "answer_action_show_reminder"].includes(normalized)) {
+            return "show-reminder";
+        }
+        if (["bury-card", "bury_card", "answer_action_bury_card"].includes(normalized)) {
+            return "bury-card";
+        }
+    }
+
+    return undefined;
+}
+
+function normalizeEasyDaysPercentages(value: unknown): number[] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+
+    const fallback = [1, 1, 1, 1, 1, 1, 1];
+    const normalized = fallback.map((defaultValue, index) => {
+        const candidate = value[index];
+        if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+            return defaultValue;
+        }
+        return Math.min(1, Math.max(0, candidate));
+    });
+
+    return normalized;
+}
+
 function normalizeStepArray(raw: unknown[] | undefined): string[] | undefined {
     if (!Array.isArray(raw)) {
         return undefined;
@@ -926,6 +1358,36 @@ function normalizeNumericArray(value: unknown): number[] | undefined {
 
     const numeric = value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
     return numeric.length > 0 ? numeric : undefined;
+}
+
+function invertBoolean(value: unknown): boolean | undefined {
+    if (typeof value !== "boolean") {
+        return undefined;
+    }
+
+    return !value;
+}
+
+function numberToBoolean(value: unknown): boolean | undefined {
+    if (typeof value === "boolean") {
+        return value;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value !== 0;
+    }
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "0" || normalized === "false") {
+            return false;
+        }
+        if (normalized === "1" || normalized === "true") {
+            return true;
+        }
+    }
+
+    return undefined;
 }
 
 function firstNumber(...values: unknown[]): number | undefined {

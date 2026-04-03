@@ -813,3 +813,58 @@
 		- `npm run test -- src/hooks/__tests__/phase4-review-completion.test.ts` ✅
 		- `npm run typecheck` ✅
 
+- Added Anki-style handling for **Display Order → New cards** (gather + sort behavior).
+	- Implemented scheduler config surface for new-card ordering:
+		- `newCardGatherPriority` (`deck`, `deck-then-random-notes`, `lowest-position`, `highest-position`, `random-notes`, `random-cards`)
+		- `newCardSortOrder` (`template`, `no-sort`, `template-then-random`, `random-note-then-template`, `random-card`)
+	- Queue behavior parity updates:
+		- `src/lib/scheduler/queue.ts`
+			- Added Anki-style **gather phase** for new cards (deck-based and global modes).
+			- Added Anki-style **sort phase** for selected new cards (template/no-sort/random variants).
+			- Added deterministic daily hashing paths for random gather/sort modes.
+	- Config parsing/persistence updates:
+		- `src/lib/scheduler/params.ts` and `src/hooks/use-review.ts`
+			- Added parsing + normalization for modern and legacy keys:
+				- `newCardGatherPriority`, `new_card_gather_priority`, `newGatherPriority`, `new_gather_priority`
+				- `newCardSortOrder`, `new_card_sort_order`, `newSortOrder`, `new_sort_order`
+		- `src/app/deck/[deckId]/options/page.tsx`
+			- Added UI controls for new-card gather/sort order in Display Ordering.
+			- Added Anki-equivalent disabled sort combinations for random gather modes.
+			- Persisted both canonical and legacy-compatible numeric keys on save.
+		- `src/lib/storage/bootstrap.ts`
+			- Seeded default deck config keys for new-card gather/sort settings.
+		- `src/lib/types/{scheduler.ts,deck.ts}`
+			- Extended type surfaces with new-card ordering fields.
+	- Regression tests added:
+		- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+			- `applies Anki new-card gather order by deck vs position`
+			- `sorts new cards by template after gather order`
+	- Verification completed:
+		- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm run typecheck` ✅
+
+- Completed remaining schedule tasks for review runtime behavior and Easy Days validation.
+	- Implemented runtime **audio/timer/auto-advance** behavior in `src/app/review/[deckId]/page.tsx`:
+		- Added timer display support (`showTimer`, `stopTimerOnAnswer`).
+		- Added question/answer auto-advance actions (`questionAction`, `answerAction`) with configured delays.
+		- Added wait-for-audio gating (`waitForAudio`) so timed actions pause while audio is playing.
+		- Added replay audio shortcut/action (`R`) and replay source behavior aligned with `skipQuestionWhenReplayingAnswer`.
+	- Added audio playback state plumbing:
+		- `src/components/review/ReviewCard.tsx` now forwards playback state callbacks.
+		- `src/components/review/CardHtml.tsx` now emits playback-state changes from card audio events.
+	- Added non-answer queue advancement path for bury-card auto actions:
+		- `src/stores/review-store.ts` added `syncQueue()` (updates queue/current card without incrementing answered count).
+		- `src/hooks/use-review.ts` now exposes `config` and `buryCurrentCard()` to the review page.
+	- Added regression coverage:
+		- `src/stores/__tests__/phase4-review-store.test.ts`
+			- `syncQueue` preserves answered/history while advancing queue.
+		- `src/components/review/__tests__/phase4-review-ui.test.tsx`
+			- Card audio playback-state callback emissions.
+		- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+			- Easy Days scheduling bias test for FSRS review answers.
+	- Verification completed:
+		- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx src/stores/__tests__/phase4-review-store.test.ts` ✅
+		- `npm test` ✅ (full suite, 74 tests)
+		- `npm run lint` ✅
+		- `npm run typecheck` ✅
+

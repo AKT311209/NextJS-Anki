@@ -56,6 +56,11 @@ export interface UndoAppliedPayload {
     readonly currentCard: ActiveReviewCard | null;
 }
 
+export interface SyncQueuePayload {
+    readonly queueResult: QueueBuildResult;
+    readonly currentCard: ActiveReviewCard | null;
+}
+
 interface ReviewStore {
     readonly deckId: number | null;
     readonly stage: ReviewSessionStage;
@@ -72,6 +77,7 @@ interface ReviewStore {
     readonly revealAnswer: () => void;
     readonly recordAnswer: (payload: RecordAnswerPayload) => void;
     readonly applyUndo: (payload: UndoAppliedPayload) => void;
+    readonly syncQueue: (payload: SyncQueuePayload) => void;
     readonly setError: (message: string) => void;
     readonly reset: () => void;
 }
@@ -82,7 +88,10 @@ const EMPTY_COUNTS: ReviewQueueCounts = {
     new: 0,
 };
 
-const INITIAL_STATE: Omit<ReviewStore, "startLoading" | "startSession" | "revealAnswer" | "recordAnswer" | "applyUndo" | "setError" | "reset"> = {
+const INITIAL_STATE: Omit<
+    ReviewStore,
+    "startLoading" | "startSession" | "revealAnswer" | "recordAnswer" | "applyUndo" | "syncQueue" | "setError" | "reset"
+> = {
     deckId: null,
     stage: "idle",
     config: DEFAULT_SCHEDULER_CONFIG,
@@ -160,6 +169,17 @@ export const useReviewStore = create<ReviewStore>((set) => ({
             stage: currentCard ? "question" : "completed",
             error: null,
             history: state.history.slice(0, -1),
+        }));
+    },
+
+    syncQueue: ({ queueResult, currentCard }) => {
+        set((state) => ({
+            ...state,
+            queue: queueResult.cards,
+            counts: queueResult.counts,
+            currentCard,
+            stage: currentCard ? "question" : "completed",
+            error: null,
         }));
     },
 

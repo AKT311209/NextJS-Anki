@@ -104,6 +104,54 @@ describe("Phase 4 review store", () => {
         expect(state.stage).toBe("completed");
         expect(state.currentCard).toBeNull();
     });
+
+    it("syncs queue without incrementing answered count or clearing undo history", () => {
+        const first = createActiveCard(3001);
+        const second = createActiveCard(3002);
+        const third = createActiveCard(3003);
+
+        useReviewStore.getState().startSession({
+            deckId: 1,
+            config: DEFAULT_SCHEDULER_CONFIG,
+            queueResult: {
+                now: NOW,
+                cards: [first.card, second.card, third.card],
+                counts: { learning: 1, review: 1, new: 1 },
+            },
+            currentCard: first,
+        });
+
+        useReviewStore.getState().recordAnswer({
+            queueResult: {
+                now: NOW,
+                cards: [second.card, third.card],
+                counts: { learning: 1, review: 1, new: 0 },
+            },
+            nextCard: second,
+            undoEntry: {
+                revlogId: 999101,
+                previousCard: first.card,
+                previousSiblingCards: [],
+                rating: "good",
+                answeredAt: NOW.getTime(),
+            },
+        });
+
+        useReviewStore.getState().syncQueue({
+            queueResult: {
+                now: NOW,
+                cards: [third.card],
+                counts: { learning: 0, review: 1, new: 0 },
+            },
+            currentCard: third,
+        });
+
+        const state = useReviewStore.getState();
+        expect(state.answered).toBe(1);
+        expect(state.history).toHaveLength(1);
+        expect(state.currentCard?.card.id).toBe(3003);
+        expect(state.stage).toBe("question");
+    });
 });
 
 function createActiveCard(cardId: number): ActiveReviewCard {

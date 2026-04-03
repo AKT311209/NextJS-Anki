@@ -7,7 +7,10 @@ import type {
     QueueBuildRequest,
     QueueBuildResult,
     SchedulerConfig,
+    SchedulerNewCardGatherPriority,
+    SchedulerNewCardSortOrder,
     SchedulerReviewMix,
+    SchedulerReviewSortOrder,
 } from "@/lib/types/scheduler";
 import { toDayNumber } from "@/lib/scheduler/states";
 
@@ -58,8 +61,8 @@ export class SchedulerQueueBuilder {
             this.selectCardsByDueRange(CardQueue.Learning, undefined, nowMs, activeDeckIds),
             this.selectCardsByDueRange(CardQueue.Learning, nowMs + 1, learnAheadCutoffMs, activeDeckIds),
             this.selectDueCards(CardQueue.DayLearning, today, activeDeckIds),
-            this.selectDueCards(CardQueue.Review, today, activeDeckIds),
-            this.selectDueCards(CardQueue.New, Number.MAX_SAFE_INTEGER, activeDeckIds),
+            this.selectReviewDueCards(today, activeDeckIds, config.reviewSortOrder, now),
+            this.selectNewCardsForGather(now, activeDeckIds, config.newCardGatherPriority),
         ]);
 
         const allowedNewCardIds = request.allowedNewCardIds;
@@ -176,8 +179,10 @@ export class SchedulerQueueBuilder {
             consumeLimit(card.did, "new");
         }
 
+        const sortedNew = sortNewCards(selectedNew, config.newCardSortOrder, today);
+
         const mainDue = mergeByReviewMix(selectedReview, selectedInterday, config.interdayLearningMix);
-        const main = mergeByReviewMix(mainDue, selectedNew, config.newReviewMix);
+        const main = mergeByReviewMix(mainDue, sortedNew, config.newReviewMix);
         const postNowQueue = config.newReviewMix === "mix-with-reviews"
             ? intersperse(main, intradayAhead)
             : [...main, ...intradayAhead];
@@ -480,6 +485,84 @@ export class SchedulerQueueBuilder {
         );
     }
 
+    private async selectNewCardsForGather(
+        now: Date,
+        deckIds: readonly number[] | undefined,
+        gatherPriority: SchedulerNewCardGatherPriority,
+    ): Promise<Card[]> {
+        const day = toDayNumber(now);
+        const gatherSalt = knuthSalt(day);
+
+        if (gatherPriority === "deck" || gatherPriority === "deck-then-random-notes") {
+            const orderedDeckIds = deckIds
+                ? [...deckIds]
+                : (await new DecksRepository(this.connection).list()).map((deck) => deck.id);
+
+            const perDeckPriority: "lowest-position" | "random-notes" =
+                gatherPriority === "deck" ? "lowest-position" : "random-notes";
+
+            return this.selectNewCardsByDeck(orderedDeckIds, perDeckPriority, gatherSalt);
+        }
+
+        return this.selectNewCardsAcrossActiveDecks(deckIds, gatherPriority, gatherSalt);
+    }
+
+    private async selectNewCardsByDeck(
+        deckIds: readonly number[],
+        gatherPriority: "lowest-position" | "random-notes",
+        gatherSalt: number,
+    ): Promise<Card[]> {
+        const gathered: Card[] = [];
+
+        for (const deckId of deckIds) {
+            const cards = await this.selectDeckNewCards(deckId, gatherPriority, gatherSalt);
+            if (cards.length > 0) {
+                gathered.push(...cards);
+            }
+        }
+
+        return gathered;
+    }
+
+    private async selectDeckNewCards(
+        deckId: number,
+        gatherPriority: "lowest-position" | "random-notes",
+        gatherSalt: number,
+    ): Promise<Card[]> {
+        const { sql, params } = newCardGatherOrderSql(gatherPriority, gatherSalt);
+
+        return this.connection.select<Card>(
+            `
+            SELECT *
+            FROM cards
+            WHERE queue = ?
+              AND did = ?
+            ORDER BY ${sql}
+            `,
+            [CardQueue.New, deckId, ...params],
+        );
+    }
+
+    private async selectNewCardsAcrossActiveDecks(
+        deckIds: readonly number[] | undefined,
+        gatherPriority: Exclude<SchedulerNewCardGatherPriority, "deck" | "deck-then-random-notes">,
+        gatherSalt: number,
+    ): Promise<Card[]> {
+        const deckFilter = buildDeckFilter(deckIds);
+        const { sql, params } = newCardGatherOrderSql(gatherPriority, gatherSalt);
+
+        return this.connection.select<Card>(
+            `
+            SELECT *
+            FROM cards
+            WHERE queue = ?
+              ${deckFilter.sql}
+            ORDER BY ${sql}
+            `,
+            [CardQueue.New, ...deckFilter.params, ...params],
+        );
+    }
+
     private async selectDueCards(queue: CardQueue, maxDue: number, deckIds?: readonly number[]): Promise<Card[]> {
         const deckFilter = buildDeckFilter(deckIds);
 
@@ -493,6 +576,33 @@ export class SchedulerQueueBuilder {
 			ORDER BY due ASC, id ASC
 			`,
             [queue, ...deckFilter.params, maxDue],
+        );
+    }
+
+    private async selectReviewDueCards(
+        maxDue: number,
+        deckIds: readonly number[] | undefined,
+        sortOrder: SchedulerReviewSortOrder,
+        now: Date,
+    ): Promise<Card[]> {
+        const deckFilter = buildDeckFilter(deckIds);
+        const nowDay = toDayNumber(now);
+
+        const { sql, params } = reviewSortOrderSql(sortOrder, {
+            nowMs: now.getTime(),
+            nowDay,
+        });
+
+        return this.connection.select<Card>(
+            `
+            SELECT *
+            FROM cards
+            WHERE queue = ?
+              ${deckFilter.sql}
+              AND due <= ?
+            ORDER BY ${sql}
+            `,
+            [CardQueue.Review, ...deckFilter.params, maxDue, ...params],
         );
     }
 
@@ -616,6 +726,111 @@ interface LearningRepeatDeferralOptions {
     readonly mainQueueCollapsed: boolean;
 }
 
+function sortNewCards(
+    cards: readonly Card[],
+    sortOrder: SchedulerNewCardSortOrder,
+    day: number,
+): Card[] {
+    if (sortOrder === "no-sort") {
+        return [...cards];
+    }
+
+    const decorated = cards.map((card, index) => ({
+        card,
+        index,
+        cardHash: fnv1a32(`${card.id}|${day}`),
+        noteHash: fnv1a32(`${card.nid}|${day}`),
+    }));
+
+    if (sortOrder === "template") {
+        decorated.sort((left, right) => {
+            if (left.card.ord !== right.card.ord) {
+                return left.card.ord - right.card.ord;
+            }
+            return left.index - right.index;
+        });
+        return decorated.map((entry) => entry.card);
+    }
+
+    if (sortOrder === "template-then-random") {
+        decorated.sort((left, right) => {
+            if (left.card.ord !== right.card.ord) {
+                return left.card.ord - right.card.ord;
+            }
+            if (left.cardHash !== right.cardHash) {
+                return left.cardHash - right.cardHash;
+            }
+            return left.index - right.index;
+        });
+        return decorated.map((entry) => entry.card);
+    }
+
+    if (sortOrder === "random-note-then-template") {
+        decorated.sort((left, right) => {
+            if (left.noteHash !== right.noteHash) {
+                return left.noteHash - right.noteHash;
+            }
+            if (left.card.ord !== right.card.ord) {
+                return left.card.ord - right.card.ord;
+            }
+            return left.index - right.index;
+        });
+        return decorated.map((entry) => entry.card);
+    }
+
+    decorated.sort((left, right) => {
+        if (left.cardHash !== right.cardHash) {
+            return left.cardHash - right.cardHash;
+        }
+        return left.index - right.index;
+    });
+    return decorated.map((entry) => entry.card);
+}
+
+function knuthSalt(baseSalt: number): number {
+    return Math.imul(baseSalt, 2_654_435_761) >>> 0;
+}
+
+function newCardGatherOrderSql(
+    gatherPriority: Exclude<SchedulerNewCardGatherPriority, "deck" | "deck-then-random-notes">,
+    gatherSalt: number,
+): {
+    readonly sql: string;
+    readonly params: readonly number[];
+} {
+    if (gatherPriority === "lowest-position") {
+        return { sql: "due ASC, ord ASC, id ASC", params: [] };
+    }
+
+    if (gatherPriority === "highest-position") {
+        return { sql: "due DESC, ord ASC, id ASC", params: [] };
+    }
+
+    if (gatherPriority === "random-notes") {
+        return {
+            sql: "fnvhash(CAST(nid AS TEXT) || '|' || ?) ASC, ord ASC, id ASC",
+            params: [gatherSalt],
+        };
+    }
+
+    return {
+        sql: "fnvhash(CAST(id AS TEXT) || '|' || ?) ASC, id ASC",
+        params: [gatherSalt],
+    };
+}
+
+function fnv1a32(input: string): number {
+    const bytes = new TextEncoder().encode(input);
+    let hash = 0x811c9dc5;
+
+    for (const byte of bytes) {
+        hash ^= byte;
+        hash = Math.imul(hash, 0x01000193);
+    }
+
+    return hash >>> 0;
+}
+
 function maybeDeferCollapsedLearningRepeat(
     cards: readonly Card[],
     options: LearningRepeatDeferralOptions,
@@ -658,4 +873,74 @@ function maybeDeferCollapsedLearningRepeat(
 
     reordered.splice(insertIndex, 0, target);
     return reordered;
+}
+
+function reviewSortOrderSql(
+    sortOrder: SchedulerReviewSortOrder,
+    timing: {
+        readonly nowMs: number;
+        readonly nowDay: number;
+    },
+): {
+    readonly sql: string;
+    readonly params: readonly number[];
+} {
+    if (sortOrder === "due-then-deck") {
+        return { sql: "due ASC, did ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "deck-then-due") {
+        return { sql: "did ASC, due ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "interval-ascending") {
+        return { sql: "ivl ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "interval-descending") {
+        return { sql: "ivl DESC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "ease-ascending") {
+        return { sql: "factor ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "ease-descending") {
+        return { sql: "factor DESC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "retrievability-ascending") {
+        return {
+            sql: "extract_fsrs_retrievability(data, ?, ?) ASC, fnvhash(id) ASC",
+            params: [-0.5, timing.nowMs],
+        };
+    }
+
+    if (sortOrder === "retrievability-descending") {
+        return {
+            sql: "extract_fsrs_retrievability(data, ?, ?) DESC, fnvhash(id) ASC",
+            params: [-0.5, timing.nowMs],
+        };
+    }
+
+    if (sortOrder === "relative-overdueness") {
+        return {
+            sql: "((? - due) * 1.0 / CASE WHEN ivl <= 0 THEN 1 ELSE ivl END) DESC, fnvhash(id) ASC",
+            params: [timing.nowDay],
+        };
+    }
+
+    if (sortOrder === "random") {
+        return { sql: "fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "added") {
+        return { sql: "nid ASC, ord ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    if (sortOrder === "reverse-added") {
+        return { sql: "nid DESC, ord ASC, fnvhash(id) ASC", params: [] };
+    }
+
+    return { sql: "due ASC, fnvhash(id) ASC", params: [] };
 }

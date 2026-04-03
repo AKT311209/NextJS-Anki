@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AnswerButtons } from "@/components/review/AnswerButtons";
@@ -13,6 +13,243 @@ export default function ReviewPage() {
 
     const deckId = useMemo(() => parseDeckId(params.deckId), [params.deckId]);
     const review = useReview({ deckId });
+    const [cardAudioPlaying, setCardAudioPlaying] = useState(false);
+    const [manualAudioPlaying, setManualAudioPlaying] = useState(false);
+    const [timerNowMs, setTimerNowMs] = useState(() => Date.now());
+    const [questionStartedAtMs, setQuestionStartedAtMs] = useState<number | null>(null);
+    const [frozenElapsedMs, setFrozenElapsedMs] = useState<number | null>(null);
+    const [autoAdvanceNotice, setAutoAdvanceNotice] = useState<string | null>(null);
+
+    const autoAdvanceNoticeTimerRef = useRef<number | null>(null);
+    const previousStageRef = useRef(review.stage);
+    const replaySequenceRef = useRef(0);
+    const replayAudioElementRef = useRef<HTMLAudioElement | null>(null);
+    const audioPlaying = cardAudioPlaying || manualAudioPlaying;
+    const audioPlayingRef = useRef(audioPlaying);
+
+    const showAutoAdvanceNotice = useCallback((message: string) => {
+        setAutoAdvanceNotice(message);
+
+        if (autoAdvanceNoticeTimerRef.current !== null) {
+            window.clearTimeout(autoAdvanceNoticeTimerRef.current);
+        }
+
+        autoAdvanceNoticeTimerRef.current = window.setTimeout(() => {
+            setAutoAdvanceNotice(null);
+        }, 2500);
+    }, []);
+
+    const stopReplayAudio = useCallback(() => {
+        replaySequenceRef.current += 1;
+        const activeAudio = replayAudioElementRef.current;
+        if (activeAudio) {
+            activeAudio.pause();
+            replayAudioElementRef.current = null;
+        }
+        setManualAudioPlaying(false);
+    }, []);
+
+    const replayAudio = useCallback(async () => {
+        if (!review.currentCard) {
+            return;
+        }
+
+        const sources = replayAudioSources(
+            review.currentCard.audioTags,
+            review.stage,
+            review.config.skipQuestionWhenReplayingAnswer,
+        );
+
+        if (sources.length === 0) {
+            return;
+        }
+
+        stopReplayAudio();
+        const sequence = replaySequenceRef.current;
+        setManualAudioPlaying(true);
+
+        for (const source of sources) {
+            if (sequence !== replaySequenceRef.current) {
+                break;
+            }
+
+            await playAudioSource(source, replayAudioElementRef, replaySequenceRef, sequence);
+        }
+
+        if (sequence === replaySequenceRef.current) {
+            replayAudioElementRef.current = null;
+            setManualAudioPlaying(false);
+        }
+    }, [
+        review.config.skipQuestionWhenReplayingAnswer,
+        review.currentCard,
+        review.stage,
+        stopReplayAudio,
+    ]);
+
+    const elapsedTimerMs = useMemo(() => {
+        if (!review.config.showTimer || questionStartedAtMs === null) {
+            return 0;
+        }
+
+        if (review.stage === "answer" && review.config.stopTimerOnAnswer && frozenElapsedMs !== null) {
+            return Math.max(0, frozenElapsedMs);
+        }
+
+        return Math.max(0, timerNowMs - questionStartedAtMs);
+    }, [
+        frozenElapsedMs,
+        questionStartedAtMs,
+        review.config.showTimer,
+        review.config.stopTimerOnAnswer,
+        review.stage,
+        timerNowMs,
+    ]);
+
+    useEffect(() => {
+        audioPlayingRef.current = audioPlaying;
+    }, [audioPlaying]);
+
+    useEffect(() => {
+        if (autoAdvanceNoticeTimerRef.current !== null) {
+            window.clearTimeout(autoAdvanceNoticeTimerRef.current);
+        }
+
+        return () => {
+            if (autoAdvanceNoticeTimerRef.current !== null) {
+                window.clearTimeout(autoAdvanceNoticeTimerRef.current);
+            }
+            stopReplayAudio();
+        };
+    }, [stopReplayAudio]);
+
+    useEffect(() => {
+        if (!review.currentCard || review.stage !== "question") {
+            return;
+        }
+
+        queueMicrotask(() => {
+            setQuestionStartedAtMs(Date.now());
+            setFrozenElapsedMs(null);
+        });
+    }, [review.currentCard, review.currentCard?.card.id, review.stage]);
+
+    useEffect(() => {
+        if (
+            review.stage === "answer" &&
+            previousStageRef.current === "question" &&
+            review.config.stopTimerOnAnswer &&
+            questionStartedAtMs !== null
+        ) {
+            const frozenElapsed = Math.max(0, Date.now() - questionStartedAtMs);
+            queueMicrotask(() => {
+                setFrozenElapsedMs(frozenElapsed);
+            });
+        }
+
+        previousStageRef.current = review.stage;
+    }, [questionStartedAtMs, review.config.stopTimerOnAnswer, review.stage]);
+
+    useEffect(() => {
+        if (!review.config.showTimer) {
+            return;
+        }
+
+        const timerId = window.setInterval(() => {
+            setTimerNowMs(Date.now());
+        }, 250);
+
+        return () => {
+            window.clearInterval(timerId);
+        };
+    }, [review.config.showTimer]);
+
+    useEffect(() => {
+        if (!review.currentCard) {
+            return;
+        }
+
+        const delaySeconds = review.stage === "question"
+            ? review.config.secondsToShowQuestion
+            : review.stage === "answer"
+                ? review.config.secondsToShowAnswer
+                : 0;
+
+        if (delaySeconds <= 0) {
+            return;
+        }
+
+        const delayMs = Math.max(0, Math.trunc(delaySeconds * 1000));
+        const deadline = Date.now() + delayMs;
+        let timeoutId: number | null = null;
+        let cancelled = false;
+        let actionTriggered = false;
+
+        const runQuestionAction = () => {
+            if (review.config.questionAction === "show-reminder") {
+                showAutoAdvanceNotice("Question timer reached — reminder shown.");
+                return;
+            }
+
+            review.revealAnswer();
+        };
+
+        const runAnswerAction = async () => {
+            switch (review.config.answerAction) {
+                case "answer-again":
+                    await review.answer("again");
+                    return;
+                case "answer-hard":
+                    await review.answer("hard");
+                    return;
+                case "answer-good":
+                    await review.answer("good");
+                    return;
+                case "show-reminder":
+                    showAutoAdvanceNotice("Answer timer reached — reminder shown.");
+                    return;
+                default:
+                    await review.buryCurrentCard();
+            }
+        };
+
+        const tick = () => {
+            if (cancelled || actionTriggered) {
+                return;
+            }
+
+            const now = Date.now();
+            if (now < deadline) {
+                timeoutId = window.setTimeout(tick, Math.min(250, deadline - now));
+                return;
+            }
+
+            if (review.config.waitForAudio && audioPlayingRef.current) {
+                timeoutId = window.setTimeout(tick, 200);
+                return;
+            }
+
+            actionTriggered = true;
+
+            if (review.stage === "question") {
+                runQuestionAction();
+                return;
+            }
+
+            if (review.stage === "answer") {
+                void runAnswerAction();
+            }
+        };
+
+        timeoutId = window.setTimeout(tick, Math.min(250, delayMs));
+
+        return () => {
+            cancelled = true;
+            if (timeoutId !== null) {
+                window.clearTimeout(timeoutId);
+            }
+        };
+    }, [review, showAutoAdvanceNotice]);
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -24,6 +261,12 @@ export default function ReviewPage() {
             }
 
             const key = event.key;
+
+            if (key === "r" || key === "R") {
+                event.preventDefault();
+                void replayAudio();
+                return;
+            }
 
             if (key === " " || key === "Spacebar") {
                 event.preventDefault();
@@ -52,7 +295,7 @@ export default function ReviewPage() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [review]);
+    }, [replayAudio, review]);
 
     return (
         <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
@@ -95,6 +338,12 @@ export default function ReviewPage() {
 
             {!review.loading && !review.error && review.currentCard ? (
                 <>
+                    {autoAdvanceNotice ? (
+                        <section className="rounded-lg border border-amber-700/70 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                            {autoAdvanceNotice}
+                        </section>
+                    ) : null}
+
                     <ReviewCard
                         questionHtml={review.currentCard.questionHtml}
                         answerHtml={review.currentCard.answerHtml}
@@ -103,6 +352,8 @@ export default function ReviewPage() {
                         templateName={review.currentCard.templateName}
                         cardOrdinalLabel={`Card #${review.currentCard.card.id}`}
                         onRevealAnswer={review.revealAnswer}
+                        autoPlayAudio={!review.config.disableAutoplay}
+                        onAudioPlaybackStateChange={setCardAudioPlaying}
                     />
 
                     {review.stage === "answer" ? (
@@ -117,7 +368,25 @@ export default function ReviewPage() {
                         <span className="rounded-md border border-slate-700 px-2 py-1">2 Hard</span>
                         <span className="rounded-md border border-slate-700 px-2 py-1">3 Good</span>
                         <span className="rounded-md border border-slate-700 px-2 py-1">4 Easy</span>
+                        <span className="rounded-md border border-slate-700 px-2 py-1">R Replay audio</span>
                         <span className="rounded-md border border-slate-700 px-2 py-1">Space Reveal/Good</span>
+                        {review.config.showTimer ? (
+                            <span className="rounded-md border border-slate-700 px-2 py-1 font-medium text-slate-200">
+                                Timer {formatTimer(elapsedTimerMs)}
+                            </span>
+                        ) : null}
+                        <button
+                            type="button"
+                            onClick={() => void replayAudio()}
+                            disabled={replayAudioSources(
+                                review.currentCard.audioTags,
+                                review.stage,
+                                review.config.skipQuestionWhenReplayingAnswer,
+                            ).length === 0}
+                            className="rounded-md border border-slate-700 px-2 py-1 text-slate-300 transition enabled:hover:bg-slate-800 disabled:opacity-40"
+                        >
+                            Replay audio
+                        </button>
                         <button
                             type="button"
                             disabled={!review.canUndo}
@@ -173,6 +442,82 @@ export default function ReviewPage() {
             ) : null}
         </main>
     );
+}
+
+function replayAudioSources(
+    tags: {
+        readonly question: readonly string[];
+        readonly answer: readonly string[];
+    },
+    stage: "idle" | "loading" | "question" | "answer" | "completed" | "error",
+    skipQuestionWhenReplayingAnswer: boolean,
+): string[] {
+    if (stage === "question") {
+        return [...tags.question];
+    }
+
+    if (stage === "answer") {
+        if (skipQuestionWhenReplayingAnswer) {
+            return [...tags.answer];
+        }
+
+        return [...tags.question, ...tags.answer];
+    }
+
+    return [];
+}
+
+async function playAudioSource(
+    source: string,
+    replayAudioElementRef: MutableRefObject<HTMLAudioElement | null>,
+    replaySequenceRef: MutableRefObject<number>,
+    sequence: number,
+): Promise<void> {
+    await new Promise<void>((resolve) => {
+        const audio = new Audio(source);
+        replayAudioElementRef.current = audio;
+
+        const finish = () => {
+            audio.removeEventListener("ended", finish);
+            audio.removeEventListener("error", finish);
+            audio.removeEventListener("abort", finish);
+            audio.removeEventListener("pause", onPause);
+            resolve();
+        };
+
+        const onPause = () => {
+            if (sequence !== replaySequenceRef.current) {
+                finish();
+            }
+        };
+
+        audio.addEventListener("ended", finish);
+        audio.addEventListener("error", finish);
+        audio.addEventListener("abort", finish);
+        audio.addEventListener("pause", onPause);
+
+        const playPromise = audio.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+            playPromise.catch(() => {
+                finish();
+            });
+        }
+    });
+}
+
+function formatTimer(elapsedMs: number): string {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds
+            .toString()
+            .padStart(2, "0")}`;
+    }
+
+    return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function formatMinutes(minutes: number): string {

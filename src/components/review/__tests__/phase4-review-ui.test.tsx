@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AnswerButtons } from "@/components/review/AnswerButtons";
@@ -94,5 +94,49 @@ describe("Phase 4 review UI", () => {
         const audios = shadow?.querySelectorAll("audio") ?? [];
         expect(audios.length).toBe(1);
         expect(audios[0]?.getAttribute("src")).toBe("https://example.com/audio.mp3");
+    });
+
+    it("emits audio playback state changes", () => {
+        const onAudioPlaybackStateChange = vi.fn();
+
+        const { container, unmount } = render(
+            <CardHtml
+                html="Front [sound:https://example.com/audio.mp3]"
+                autoPlayAudio={false}
+                onAudioPlaybackStateChange={onAudioPlaybackStateChange}
+            />,
+        );
+
+        const host = container.firstElementChild as HTMLElement;
+        const audio = host.shadowRoot?.querySelector("audio") as HTMLAudioElement | null;
+
+        expect(audio).not.toBeNull();
+        if (!audio) {
+            throw new Error("Expected audio element");
+        }
+
+        let paused = true;
+        let ended = false;
+
+        Object.defineProperty(audio, "paused", {
+            configurable: true,
+            get: () => paused,
+        });
+        Object.defineProperty(audio, "ended", {
+            configurable: true,
+            get: () => ended,
+        });
+
+        paused = false;
+        fireEvent(audio, new Event("play"));
+        expect(onAudioPlaybackStateChange).toHaveBeenLastCalledWith(true);
+
+        paused = true;
+        ended = true;
+        fireEvent(audio, new Event("ended"));
+        expect(onAudioPlaybackStateChange).toHaveBeenLastCalledWith(false);
+
+        unmount();
+        expect(onAudioPlaybackStateChange).toHaveBeenLastCalledWith(false);
     });
 });

@@ -5,6 +5,45 @@ export type ReviewRating = "again" | "hard" | "good" | "easy";
 
 export type SchedulerReviewMix = "mix-with-reviews" | "after-reviews" | "before-reviews";
 
+export type SchedulerNewCardGatherPriority =
+    | "deck"
+    | "deck-then-random-notes"
+    | "lowest-position"
+    | "highest-position"
+    | "random-notes"
+    | "random-cards";
+
+export type SchedulerNewCardSortOrder =
+    | "template"
+    | "no-sort"
+    | "template-then-random"
+    | "random-note-then-template"
+    | "random-card";
+
+export type SchedulerReviewSortOrder =
+    | "due"
+    | "due-then-deck"
+    | "deck-then-due"
+    | "interval-ascending"
+    | "interval-descending"
+    | "ease-ascending"
+    | "ease-descending"
+    | "retrievability-ascending"
+    | "retrievability-descending"
+    | "relative-overdueness"
+    | "random"
+    | "added"
+    | "reverse-added";
+
+export type SchedulerQuestionAction = "show-answer" | "show-reminder";
+
+export type SchedulerAnswerAction =
+    | "bury-card"
+    | "answer-again"
+    | "answer-good"
+    | "answer-hard"
+    | "show-reminder";
+
 export type SchedulerLeechAction = "tag-only" | "suspend";
 
 export const REVIEW_RATINGS: readonly ReviewRating[] = ["again", "hard", "good", "easy"] as const;
@@ -49,8 +88,22 @@ export interface SchedulerConfig {
     readonly buryNew: boolean;
     readonly buryReviews: boolean;
     readonly buryInterdayLearning: boolean;
+    readonly newCardGatherPriority: SchedulerNewCardGatherPriority;
+    readonly newCardSortOrder: SchedulerNewCardSortOrder;
     readonly newReviewMix: SchedulerReviewMix;
     readonly interdayLearningMix: SchedulerReviewMix;
+    readonly reviewSortOrder: SchedulerReviewSortOrder;
+    readonly disableAutoplay: boolean;
+    readonly skipQuestionWhenReplayingAnswer: boolean;
+    readonly capAnswerTimeToSecs: number;
+    readonly showTimer: boolean;
+    readonly stopTimerOnAnswer: boolean;
+    readonly secondsToShowQuestion: number;
+    readonly secondsToShowAnswer: number;
+    readonly waitForAudio: boolean;
+    readonly questionAction: SchedulerQuestionAction;
+    readonly answerAction: SchedulerAnswerAction;
+    readonly easyDaysPercentages: readonly number[];
     readonly newCardsIgnoreReviewLimit: boolean;
     readonly applyAllParentLimits: boolean;
     readonly learnAheadSeconds: number;
@@ -81,8 +134,22 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     buryNew: false,
     buryReviews: false,
     buryInterdayLearning: false,
+    newCardGatherPriority: "deck",
+    newCardSortOrder: "template",
     newReviewMix: "mix-with-reviews",
     interdayLearningMix: "mix-with-reviews",
+    reviewSortOrder: "due",
+    disableAutoplay: false,
+    skipQuestionWhenReplayingAnswer: false,
+    capAnswerTimeToSecs: 60,
+    showTimer: false,
+    stopTimerOnAnswer: false,
+    secondsToShowQuestion: 0,
+    secondsToShowAnswer: 0,
+    waitForAudio: true,
+    questionAction: "show-answer",
+    answerAction: "bury-card",
+    easyDaysPercentages: [1, 1, 1, 1, 1, 1, 1],
     newCardsIgnoreReviewLimit: false,
     applyAllParentLimits: false,
     learnAheadSeconds: 1200,

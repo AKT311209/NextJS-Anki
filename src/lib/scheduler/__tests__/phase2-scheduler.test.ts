@@ -4,7 +4,7 @@ import { SchedulerEngine } from "@/lib/scheduler/engine";
 import { constrainedFuzzBounds, fuzzInterval, fuzzLearningIntervalSeconds } from "@/lib/scheduler/fuzz";
 import { optimizeSchedulerParameters } from "@/lib/scheduler/params";
 import { SchedulerQueueBuilder } from "@/lib/scheduler/queue";
-import { toDayNumber } from "@/lib/scheduler/states";
+import { fromDayNumber, toDayNumber } from "@/lib/scheduler/states";
 import { CollectionDatabaseManager, type CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository } from "@/lib/storage/repositories/cards";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
@@ -771,6 +771,193 @@ describe("Phase 2 scheduler domain", () => {
         expect(queue.counts.new).toBe(2);
     });
 
+    it("applies Anki new-card gather order by deck vs position", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const parentDeck = await decks.create("Gather::Parent");
+        const childDeck = await decks.create("Gather::Parent::Child");
+        const childDeck2 = await decks.create("Gather::Parent::Child_2");
+
+        await notes.create({
+            id: 7610,
+            guid: "gather-parent-note",
+            mid: 101,
+            fields: ["front-parent", "back-parent"],
+        });
+        await notes.create({
+            id: 7611,
+            guid: "gather-child-note",
+            mid: 101,
+            fields: ["front-child", "back-child"],
+        });
+        await notes.create({
+            id: 7612,
+            guid: "gather-child2-note",
+            mid: 101,
+            fields: ["front-child2", "back-child2"],
+        });
+
+        await cards.create({
+            id: 76101,
+            nid: 7610,
+            did: parentDeck.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY + 30,
+        });
+        await cards.create({
+            id: 76111,
+            nid: 7611,
+            did: childDeck.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY + 10,
+        });
+        await cards.create({
+            id: 76121,
+            nid: 7612,
+            did: childDeck2.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY + 20,
+        });
+
+        const queueBuilder = new SchedulerQueueBuilder(connection);
+
+        const deckGatherQueue = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: parentDeck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                newCardGatherPriority: "deck",
+                newCardSortOrder: "no-sort",
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+        });
+
+        expect(deckGatherQueue.cards.map((card) => card.id)).toEqual([76101, 76111, 76121]);
+
+        const positionGatherQueue = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: parentDeck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                newCardGatherPriority: "lowest-position",
+                newCardSortOrder: "no-sort",
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+        });
+
+        expect(positionGatherQueue.cards.map((card) => card.id)).toEqual([76111, 76121, 76101]);
+    });
+
+    it("sorts new cards by template after gather order", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const deck = await decks.create("Sort::Template");
+
+        await notes.create({
+            id: 7620,
+            guid: "sort-template-note-a",
+            mid: 101,
+            fields: ["front-a", "back-a"],
+        });
+        await notes.create({
+            id: 7621,
+            guid: "sort-template-note-b",
+            mid: 101,
+            fields: ["front-b", "back-b"],
+        });
+
+        await cards.create({
+            id: 76201,
+            nid: 7620,
+            did: deck.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY,
+        });
+        await cards.create({
+            id: 76202,
+            nid: 7620,
+            did: deck.id,
+            ord: 1,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY,
+        });
+        await cards.create({
+            id: 76211,
+            nid: 7621,
+            did: deck.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY + 1,
+        });
+        await cards.create({
+            id: 76212,
+            nid: 7621,
+            did: deck.id,
+            ord: 1,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY + 1,
+        });
+
+        const queueBuilder = new SchedulerQueueBuilder(connection);
+
+        const gatherOnlyQueue = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: deck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                newCardGatherPriority: "lowest-position",
+                newCardSortOrder: "no-sort",
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+        });
+
+        expect(gatherOnlyQueue.cards.map((card) => card.id)).toEqual([76201, 76202, 76211, 76212]);
+
+        const templateSortedQueue = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: deck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                newCardGatherPriority: "lowest-position",
+                newCardSortOrder: "template",
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+        });
+
+        expect(templateSortedQueue.cards.map((card) => card.id)).toEqual([76201, 76211, 76202, 76212]);
+    });
+
     it("consumes review limit with interday learning before review cards", async () => {
         const decks = new DecksRepository(connection);
         const notes = new NotesRepository(connection);
@@ -1308,6 +1495,118 @@ describe("Phase 2 scheduler domain", () => {
         expect(persisted?.due).toBe(result.nextCard.due);
     });
 
+    it("biases FSRS review scheduling toward configured easy days", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const deck = await decks.create("Answer::EasyDays");
+
+        await notes.create({
+            id: 8500,
+            guid: "easy-days-note-0",
+            mid: 101,
+            fields: ["question-0", "answer-0"],
+        });
+
+        await notes.create({
+            id: 8501,
+            guid: "easy-days-note-1",
+            mid: 101,
+            fields: ["question-1", "answer-1"],
+        });
+
+        const baseCardData = JSON.stringify({
+            scheduler: "fsrs",
+            fsrs: {
+                stability: 24,
+                difficulty: 4.8,
+                lastReview: FIXED_NOW.getTime() - 24 * 24 * 60 * 60 * 1000,
+                elapsedDays: 24,
+                scheduledDays: 24,
+            },
+        });
+
+        await cards.create({
+            id: 85001,
+            nid: 8500,
+            did: deck.id,
+            ord: 0,
+            type: CardType.Review,
+            queue: CardQueue.Review,
+            due: FIXED_DAY,
+            ivl: 24,
+            factor: 2500,
+            reps: 24,
+            lapses: 1,
+            left: 0,
+            data: baseCardData,
+        });
+
+        await cards.create({
+            id: 85002,
+            nid: 8501,
+            did: deck.id,
+            ord: 0,
+            type: CardType.Review,
+            queue: CardQueue.Review,
+            due: FIXED_DAY,
+            ivl: 24,
+            factor: 2500,
+            reps: 24,
+            lapses: 1,
+            left: 0,
+            data: baseCardData,
+        });
+
+        const service = new SchedulerAnsweringService(connection, new SchedulerEngine());
+        const baselineConfig: SchedulerConfig = {
+            ...DEFAULT_SCHEDULER_CONFIG,
+            enableFuzz: false,
+        };
+
+        const baseline = await service.answerCardById(85001, "good", baselineConfig, FIXED_NOW, 900);
+        const today = toDayNumber(FIXED_NOW);
+        const desiredDueDay = baseline.nextCard.due;
+        const desiredIntervalDays = Math.max(1, desiredDueDay - today);
+        const [lowerOffset, upperOffset] = constrainedFuzzBounds(
+            desiredIntervalDays,
+            Math.max(1, baselineConfig.minimumInterval),
+            baselineConfig.maximumInterval,
+        );
+
+        expect(upperOffset).toBeGreaterThan(lowerOffset);
+
+        const lowerDay = today + lowerOffset;
+        const upperDay = today + upperOffset;
+
+        const targetDay = desiredDueDay > lowerDay
+            ? desiredDueDay - 1
+            : desiredDueDay < upperDay
+                ? desiredDueDay + 1
+                : desiredDueDay;
+
+        expect(targetDay).not.toBe(desiredDueDay);
+
+        const easyDaysPercentages = [0, 0, 0, 0, 0, 0, 0];
+        easyDaysPercentages[mondayFirstWeekday(targetDay)] = 1;
+
+        const adjusted = await service.answerCardById(
+            85002,
+            "good",
+            {
+                ...baselineConfig,
+                easyDaysPercentages,
+            },
+            FIXED_NOW,
+            900,
+        );
+
+        expect(adjusted.nextCard.due).toBe(targetDay);
+        expect(adjusted.scheduledDays).toBe(Math.max(1, targetDay - today));
+        expect(adjusted.fsrs?.scheduledDays).toBe(Math.max(1, targetDay - today));
+    });
+
     it("answers card, writes revlog, marks leech, and buries siblings", async () => {
         const decks = new DecksRepository(connection);
         const notes = new NotesRepository(connection);
@@ -1479,4 +1778,9 @@ function createCard(input: Partial<Card> & Pick<Card, "id" | "nid" | "did" | "or
         flags: input.flags ?? 0,
         data: input.data ?? "",
     };
+}
+
+function mondayFirstWeekday(dayNumber: number): number {
+    const sundayFirst = fromDayNumber(dayNumber).getDay();
+    return (sundayFirst + 6) % 7;
 }

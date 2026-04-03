@@ -9,6 +9,7 @@ export interface CardHtmlProps {
     readonly className?: string;
     readonly nightMode?: boolean;
     readonly autoPlayAudio?: boolean;
+    readonly onAudioPlaybackStateChange?: (isPlaying: boolean) => void;
 }
 
 const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
@@ -69,6 +70,7 @@ export function CardHtml({
     className,
     nightMode = true,
     autoPlayAudio = true,
+    onAudioPlaybackStateChange,
 }: CardHtmlProps) {
     const hostRef = useRef<HTMLDivElement>(null);
 
@@ -90,11 +92,43 @@ export function CardHtml({
 
         shadowRoot.append(style, container);
 
-        if (!autoPlayAudio) {
-            return;
+        const audios = [...shadowRoot.querySelectorAll<HTMLAudioElement>("audio[data-anki-autoplay='true']")];
+
+        const emitPlaybackState = () => {
+            if (!onAudioPlaybackStateChange) {
+                return;
+            }
+
+            const hasPlayingAudio = audios.some((audio) => !audio.paused && !audio.ended);
+            onAudioPlaybackStateChange(hasPlayingAudio);
+        };
+
+        const onAudioEvent = () => {
+            emitPlaybackState();
+        };
+
+        for (const audio of audios) {
+            audio.addEventListener("play", onAudioEvent);
+            audio.addEventListener("pause", onAudioEvent);
+            audio.addEventListener("ended", onAudioEvent);
+            audio.addEventListener("error", onAudioEvent);
         }
 
-        const audios = shadowRoot.querySelectorAll<HTMLAudioElement>("audio[data-anki-autoplay='true']");
+        emitPlaybackState();
+
+        if (!autoPlayAudio) {
+            return () => {
+                for (const audio of audios) {
+                    audio.removeEventListener("play", onAudioEvent);
+                    audio.removeEventListener("pause", onAudioEvent);
+                    audio.removeEventListener("ended", onAudioEvent);
+                    audio.removeEventListener("error", onAudioEvent);
+                }
+
+                onAudioPlaybackStateChange?.(false);
+            };
+        }
+
         for (const audio of audios) {
             const playPromise = audio.play();
             if (playPromise && typeof playPromise.catch === "function") {
@@ -103,7 +137,18 @@ export function CardHtml({
                 });
             }
         }
-    }, [autoPlayAudio, css, html, nightMode]);
+
+        return () => {
+            for (const audio of audios) {
+                audio.removeEventListener("play", onAudioEvent);
+                audio.removeEventListener("pause", onAudioEvent);
+                audio.removeEventListener("ended", onAudioEvent);
+                audio.removeEventListener("error", onAudioEvent);
+            }
+
+            onAudioPlaybackStateChange?.(false);
+        };
+    }, [autoPlayAudio, css, html, nightMode, onAudioPlaybackStateChange]);
 
     return <div ref={hostRef} className={cn("w-full", className)} />;
 }
