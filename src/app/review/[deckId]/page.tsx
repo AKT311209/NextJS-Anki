@@ -57,15 +57,13 @@ export default function ReviewPage() {
     return (
         <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
             <header className="space-y-2">
-                <div className="flex items-center gap-3">
-                    <Link
-                        href="/"
-                        className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-300 transition hover:bg-slate-800"
-                    >
-                        &larr; Home
-                    </Link>
-                    <h1 className="text-3xl font-bold tracking-tight">Review</h1>
-                </div>
+                <Link
+                    href="/"
+                    className="text-sm text-slate-400 transition hover:text-slate-200"
+                >
+                    &larr; Back to decks
+                </Link>
+                <h1 className="text-3xl font-bold tracking-tight">Review</h1>
                 <p className="text-sm text-slate-400">
                     {deckId === null
                         ? "Deck not specified — showing due cards across all decks."

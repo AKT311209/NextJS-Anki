@@ -359,12 +359,12 @@ export default function ImportPage() {
                 <div className="flex items-center gap-3">
                     <Link
                         href="/"
-                        className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-300 transition hover:bg-slate-800"
+                        className="text-sm text-slate-400 transition hover:text-slate-200"
                     >
-                        &larr; Home
+                        &larr; Back to decks
                     </Link>
-                    <h1 className="text-3xl font-bold tracking-tight text-slate-100">Import & Export</h1>
                 </div>
+                <h1 className="text-3xl font-bold tracking-tight text-slate-100">Import & Export</h1>
                 <p className="max-w-3xl text-sm text-slate-300 sm:text-base">
                     Import Anki <code>.apkg</code> packages or CSV/TSV files, and export your collection
                     back to <code>.apkg</code>.
