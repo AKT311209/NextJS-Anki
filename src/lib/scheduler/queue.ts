@@ -182,7 +182,11 @@ export class SchedulerQueueBuilder {
             ? intersperse(main, intradayAhead)
             : [...main, ...intradayAhead];
 
-        const cards = [...intradayNow, ...postNowQueue];
+        const cards = maybeDeferCollapsedLearningRepeat([...intradayNow, ...postNowQueue], {
+            cardId: request.avoidImmediateLearningRepeatCardId,
+            learnAheadCutoffMs,
+            mainQueueCollapsed: main.length === 0,
+        });
 
         const counts = summarizeCounts(cards);
 
@@ -604,4 +608,54 @@ function intersperse<T>(one: readonly T[], two: readonly T[]): T[] {
     }
 
     return merged;
+}
+
+interface LearningRepeatDeferralOptions {
+    readonly cardId?: number;
+    readonly learnAheadCutoffMs: number;
+    readonly mainQueueCollapsed: boolean;
+}
+
+function maybeDeferCollapsedLearningRepeat(
+    cards: readonly Card[],
+    options: LearningRepeatDeferralOptions,
+): Card[] {
+    if (options.cardId === undefined || !options.mainQueueCollapsed) {
+        return [...cards];
+    }
+
+    const targetIndex = cards.findIndex((card) => card.id === options.cardId);
+    if (targetIndex < 0) {
+        return [...cards];
+    }
+
+    const target = cards[targetIndex];
+    if (!target || target.queue !== CardQueue.Learning || target.due > options.learnAheadCutoffMs) {
+        return [...cards];
+    }
+
+    const nextLearning = cards.find(
+        (card, index) => index !== targetIndex && card.queue === CardQueue.Learning,
+    );
+    if (!nextLearning) {
+        return [...cards];
+    }
+
+    // Mirror Anki's queue::learning::requeue_learning_entry() behavior:
+    // when the main queue is collapsed, avoid immediate repeats by placing the
+    // just-answered learning card after the next queued learning card.
+    if (nextLearning.due < target.due || nextLearning.due + 1_000 >= options.learnAheadCutoffMs) {
+        return [...cards];
+    }
+
+    const reordered = [...cards];
+    reordered.splice(targetIndex, 1);
+
+    let insertIndex = reordered.findIndex((card) => card.queue !== CardQueue.Learning || card.due > nextLearning.due);
+    if (insertIndex < 0) {
+        insertIndex = reordered.length;
+    }
+
+    reordered.splice(insertIndex, 0, target);
+    return reordered;
 }

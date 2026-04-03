@@ -1,38 +1,107 @@
-import { toDayNumber } from "@/lib/scheduler/states";
+interface FuzzRange {
+    readonly start: number;
+    readonly end: number;
+    readonly factor: number;
+}
 
-export interface FuzzOptions {
+const REVIEW_FUZZ_RANGES: readonly FuzzRange[] = [
+    {
+        start: 2.5,
+        end: 7,
+        factor: 0.15,
+    },
+    {
+        start: 7,
+        end: 20,
+        factor: 0.1,
+    },
+    {
+        start: 20,
+        end: Number.POSITIVE_INFINITY,
+        factor: 0.05,
+    },
+];
+
+export interface ReviewFuzzOptions {
     readonly cardId: number;
-    readonly now: Date;
-    readonly maximumInterval: number;
+    readonly reps: number;
+    readonly minimum?: number;
+    readonly maximum: number;
+    readonly enabled?: boolean;
 }
 
-export function fuzzInterval(intervalDays: number, options: FuzzOptions): number {
-    const rounded = Math.max(1, Math.trunc(intervalDays));
-
-    if (rounded <= 2) {
-        return rounded;
-    }
-
-    const spread = computeFuzzSpread(rounded);
-    const daySeed = toDayNumber(options.now);
-    const seed = hash32(`${options.cardId}:${daySeed}`);
-    const random = mulberry32(seed)();
-
-    const min = Math.max(1, rounded - spread);
-    const max = Math.max(min, rounded + spread);
-    const fuzzed = Math.floor(min + random * (max - min + 1));
-
-    return Math.min(Math.max(1, fuzzed), Math.max(1, Math.trunc(options.maximumInterval)));
+export interface LearningDelayFuzzOptions {
+    readonly cardId: number;
+    readonly reps: number;
 }
 
-function computeFuzzSpread(intervalDays: number): number {
-    if (intervalDays < 7) {
-        return 1;
+export function fuzzInterval(intervalDays: number, options: ReviewFuzzOptions): number {
+    const maximum = Math.max(1, Math.trunc(options.maximum));
+    const minimum = clamp(Math.trunc(options.minimum ?? 1), 1, maximum);
+    const clampedInterval = clamp(intervalDays, minimum, maximum);
+
+    if (options.enabled === false) {
+        return clamp(Math.round(clampedInterval), minimum, maximum);
     }
-    if (intervalDays < 30) {
-        return Math.max(1, Math.round(intervalDays * 0.15));
+
+    const [lower, upper] = constrainedFuzzBounds(clampedInterval, minimum, maximum);
+    const fuzzFactor = fuzzFactorForCard(options.cardId, options.reps);
+
+    return Math.floor(lower + fuzzFactor * (1 + upper - lower));
+}
+
+export function fuzzLearningIntervalSeconds(
+    intervalSeconds: number,
+    options: LearningDelayFuzzOptions,
+): number {
+    const seconds = Math.max(0, Math.trunc(intervalSeconds));
+    const upperExclusive = seconds + Math.floor(Math.min(seconds * 0.25, 300));
+
+    if (seconds >= upperExclusive) {
+        return seconds;
     }
-    return Math.max(1, Math.round(intervalDays * 0.05));
+
+    const fuzzFactor = fuzzFactorForCard(options.cardId, options.reps);
+    return seconds + Math.floor(fuzzFactor * (upperExclusive - seconds));
+}
+
+export function constrainedFuzzBounds(intervalDays: number, minimum: number, maximum: number): [number, number] {
+    const boundedMaximum = Math.max(1, Math.trunc(maximum));
+    const boundedMinimum = clamp(Math.trunc(minimum), 1, boundedMaximum);
+    const boundedInterval = clamp(intervalDays, boundedMinimum, boundedMaximum);
+    let [lower, upper] = fuzzBounds(boundedInterval);
+
+    lower = clamp(lower, boundedMinimum, boundedMaximum);
+    upper = clamp(upper, boundedMinimum, boundedMaximum);
+
+    if (upper === lower && upper > 2 && upper < boundedMaximum) {
+        upper = lower + 1;
+    }
+
+    return [lower, upper];
+}
+
+function fuzzBounds(intervalDays: number): [number, number] {
+    const delta = fuzzDelta(intervalDays);
+    return [Math.round(intervalDays - delta), Math.round(intervalDays + delta)];
+}
+
+function fuzzDelta(intervalDays: number): number {
+    if (intervalDays < 2.5) {
+        return 0;
+    }
+
+    return REVIEW_FUZZ_RANGES.reduce(
+        (delta, range) => delta + range.factor * Math.max(0, Math.min(intervalDays, range.end) - range.start),
+        1,
+    );
+}
+
+function fuzzFactorForCard(cardId: number, reps: number): number {
+    const normalizedCardId = BigInt(Math.max(0, Math.trunc(cardId)));
+    const normalizedReps = BigInt(Math.max(0, Math.trunc(reps)));
+    const seed = Number((normalizedCardId + normalizedReps) & BigInt(0xffff_ffff));
+    return mulberry32(seed)();
 }
 
 function mulberry32(seed: number): () => number {
@@ -46,11 +115,12 @@ function mulberry32(seed: number): () => number {
     };
 }
 
-function hash32(text: string): number {
-    let hash = 2166136261;
-    for (let index = 0; index < text.length; index += 1) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
+function clamp(value: number, minimum: number, maximum: number): number {
+    if (value < minimum) {
+        return minimum;
     }
-    return hash >>> 0;
+    if (value > maximum) {
+        return maximum;
+    }
+    return value;
 }

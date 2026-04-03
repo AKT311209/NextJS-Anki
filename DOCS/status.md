@@ -709,3 +709,83 @@
 				- `npm run lint` ✅
 				- `npm run typecheck` ✅
 
+			- Reimplemented FSRS in-day scheduling flow to match Anki Desktop’s short-term vs long-term transition logic.
+				- Root cause:
+					- `buildTransitionFromFsrs()` treated FSRS fractional intervals as immediate in-day scheduling for learning answers, so first `Good` on a new card could become long intraday delays (for example ~148m) instead of the configured learning step progression.
+				- Upstream analysis (read-only reference):
+					- `ANKIDESKTOP/rslib/src/scheduler/states/{normal.rs,learning.rs,relearning.rs,review.rs,steps.rs,interval_kind.rs}`
+					- `ANKIDESKTOP/rslib/src/scheduler/answering/{mod.rs,learning.rs,relearning.rs,review.rs}`
+					- Focused on Anki’s step-first handling, FSRS short-term gating (`interval < 0.5d`), and rollover-aware conversion from intraday seconds to day-learning.
+				- Implementation updates:
+					- `src/lib/scheduler/engine.ts`
+						- Reworked FSRS transition resolution into state-specific paths:
+							- New/Learning: `Again/Hard/Good` prioritize configured learning steps.
+							- Relearning: `Again/Hard/Good` prioritize relearning steps.
+							- Review `Again`: prioritizes relearning step delay.
+						- Added step progression helpers mirroring Anki behavior (`hard` first-step midpoint, `remaining_for_good`, etc.).
+						- Added rollover-aware intraday scheduling conversion (`Learning` ↔ `DayLearning`) based on seconds until next scheduler rollover, not a fixed 24h threshold.
+						- Added FSRS short-term fallback gating for no-step branches: only when short-term is enabled and `interval < 0.5d`, with step-aware gating.
+						- Corrected lapse counting parity: `lapses` now increments on `Again` from Review, not repeatedly during Relearning `Again`.
+					- `src/lib/types/scheduler.ts`
+						- Added `fsrsShortTermWithSteps` to scheduler config surface (default `false`).
+					- `src/lib/scheduler/params.ts`
+						- Added normalization/parsing for `fsrsShortTermWithSteps` (including snake_case/legacy key variants).
+					- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+						- Added regressions for:
+							- first `Good` on new FSRS cards uses learning-step delay (10m), not long FSRS intraday interval
+							- graduation to Review after configured steps complete
+							- no extra lapse increment while already in Relearning on `Again`
+				- Verification completed:
+					- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (21 tests)
+					- `npm run typecheck` ✅
+					- `npm run lint` ✅
+
+				- Fixed Anki-parity queue behavior where a failed learning/relearning card could monopolize the top slot.
+					- Root cause:
+						- The review flow rebuilt the queue from DB after each answer, but did not apply Anki's in-memory collapsed-learning requeue safeguard.
+						- In a collapsed session (no main queue cards), a just-answered learning card (for example after `Again`) could be selected again immediately, preventing other queued learning cards from appearing first.
+					- Upstream analysis (read-only reference):
+						- `ANKIDESKTOP/rslib/src/scheduler/queue/learning.rs`
+						- Specifically mirrored `requeue_learning_entry()` logic that defers immediate repeats when `main` is empty.
+					- Implementation updates:
+						- `src/lib/types/scheduler.ts`
+							- Added `QueueBuildRequest.avoidImmediateLearningRepeatCardId`.
+						- `src/lib/scheduler/queue.ts`
+							- Added `maybeDeferCollapsedLearningRepeat()`.
+							- When the main queue is collapsed, and the just-answered intraday learning card is within learn-ahead cutoff, it is deferred behind the next queued learning card (Anki-style anti-repeat behavior).
+						- `src/hooks/use-review.ts`
+							- Answer flow now passes `avoidImmediateLearningRepeatCardId` during queue rebuild.
+						- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+							- Added regression test: `avoids immediate repeat of just-answered learning card when main queue is collapsed`.
+					- Verification completed:
+						- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (22 tests)
+
+					- Implemented Anki-style fuzz behavior for review intervals and intraday learning delays.
+						- Root cause:
+							- Scheduler fuzz previously used a simplified spread + day-seeded hash that did not match Anki’s interval ranges or seeding semantics.
+							- Intraday learning/relearning delays were persisted without Anki’s hidden post-answer fuzz (+up to 25%, capped at +5m).
+						- Upstream analysis (read-only reference):
+							- `ANKIDESKTOP/rslib/src/scheduler/states/fuzz.rs`
+							- `ANKIDESKTOP/rslib/src/scheduler/answering/learning.rs`
+							- `ANKIDESKTOP/rslib/src/scheduler/answering/relearning.rs`
+						- Implementation updates:
+							- `src/lib/scheduler/fuzz.ts`
+								- Replaced fuzz implementation with Anki-compatible review fuzz ranges:
+									- 2.5–7 days: 15%
+									- 7–20 days: 10%
+									- 20+ days: 5%
+								- Added constrained bounds logic equivalent to Anki’s `constrained_fuzz_bounds`.
+								- Switched deterministic seed input to card/review state (`cardId + reps`) instead of day number.
+								- Added `fuzzLearningIntervalSeconds()` for Anki-style hidden intraday delay fuzz.
+							- `src/lib/scheduler/engine.ts`
+								- Updated review fuzz calls (FSRS + SM-2 paths) to use card/reps seeded fuzz options.
+							- `src/lib/scheduler/answering.ts`
+								- Added mandatory learning-delay fuzz application when persisting `CardQueue.Learning` answers.
+								- Keeps preview/button timings unchanged while actual due timestamp is fuzzed post-answer, matching Anki behavior.
+							- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+								- Added `matches Anki-style review fuzz bounds and deterministic seeding`.
+								- Added `applies hidden Anki learning-delay fuzz on answer without changing preview timing`.
+						- Verification completed:
+							- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (24 tests)
+							- `npm run typecheck && npm run lint` ✅
+

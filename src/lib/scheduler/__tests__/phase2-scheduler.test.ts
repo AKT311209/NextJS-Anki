@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SchedulerAnsweringService } from "@/lib/scheduler/answering";
 import { SchedulerEngine } from "@/lib/scheduler/engine";
+import { constrainedFuzzBounds, fuzzInterval, fuzzLearningIntervalSeconds } from "@/lib/scheduler/fuzz";
 import { optimizeSchedulerParameters } from "@/lib/scheduler/params";
 import { SchedulerQueueBuilder } from "@/lib/scheduler/queue";
 import { toDayNumber } from "@/lib/scheduler/states";
@@ -67,6 +68,95 @@ describe("Phase 2 scheduler domain", () => {
         expect(preview.easy.scheduledDays).toBeGreaterThanOrEqual(preview.hard.scheduledDays);
     });
 
+    it("uses Anki learning-step delay for first Good on new FSRS cards", () => {
+        const engine = new SchedulerEngine();
+
+        const card = createCard({
+            id: 1006,
+            nid: 5006,
+            did: 1,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY,
+            ivl: 0,
+            factor: 2500,
+            reps: 0,
+            lapses: 0,
+            left: 0,
+            data: "",
+        });
+
+        const preview = engine.previewCard(
+            card,
+            {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                enableFuzz: false,
+                fsrsShortTermWithSteps: false,
+                learningSteps: ["1m", "10m"],
+                now: FIXED_NOW,
+            },
+            FIXED_NOW,
+        );
+
+        const goodMinutes = Math.round((preview.good.due.getTime() - FIXED_NOW.getTime()) / 60_000);
+        const hardSeconds = Math.round((preview.hard.due.getTime() - FIXED_NOW.getTime()) / 1_000);
+
+        expect(preview.good.nextCard.type).toBe(CardType.Learning);
+        expect(preview.good.nextCard.queue).toBe(CardQueue.Learning);
+        expect(preview.good.nextCard.left).toBe(1);
+        expect(goodMinutes).toBe(10);
+
+        expect(preview.hard.nextCard.type).toBe(CardType.Learning);
+        expect(preview.hard.nextCard.queue).toBe(CardQueue.Learning);
+        expect(preview.hard.nextCard.left).toBe(2);
+        expect(hardSeconds).toBe(330);
+    });
+
+    it("graduates learning card to Review after finishing configured steps", () => {
+        const engine = new SchedulerEngine();
+
+        const learningCard = createCard({
+            id: 1007,
+            nid: 5007,
+            did: 1,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime(),
+            ivl: 0,
+            factor: 2500,
+            reps: 1,
+            lapses: 0,
+            left: 1,
+            data: JSON.stringify({
+                scheduler: "fsrs",
+                fsrs: {
+                    stability: 0.5,
+                    difficulty: 5,
+                    lastReview: FIXED_NOW.getTime() - 10 * 60_000,
+                    elapsedDays: 0,
+                    scheduledDays: 0,
+                },
+            }),
+        });
+
+        const preview = engine.previewCard(
+            learningCard,
+            {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                enableFuzz: false,
+                fsrsShortTermWithSteps: false,
+                learningSteps: ["1m", "10m"],
+                now: FIXED_NOW,
+            },
+            FIXED_NOW,
+        );
+
+        expect(preview.good.nextCard.queue).toBe(CardQueue.Review);
+        expect(preview.good.nextCard.ivl).toBeGreaterThanOrEqual(1);
+    });
+
     it("uses SM-2 fallback when card requests legacy scheduler", async () => {
         const engine = new SchedulerEngine();
         const config: SchedulerConfig = {
@@ -125,6 +215,51 @@ describe("Phase 2 scheduler domain", () => {
         expect(optimized.requestRetention).toBe(0.9);
         expect(optimized.maximumInterval).toBe(30);
         expect(optimized.weights.length).toBe(21);
+    });
+
+    it("matches Anki-style review fuzz bounds and deterministic seeding", () => {
+        const [lower, upper] = constrainedFuzzBounds(37, 1, 36500);
+
+        expect(lower).toBe(33);
+        expect(upper).toBe(41);
+
+        const first = fuzzInterval(37, {
+            cardId: 900_001,
+            reps: 12,
+            minimum: 1,
+            maximum: 36500,
+            enabled: true,
+        });
+        const second = fuzzInterval(37, {
+            cardId: 900_001,
+            reps: 12,
+            minimum: 1,
+            maximum: 36500,
+            enabled: true,
+        });
+
+        expect(first).toBe(second);
+        expect(first).toBeGreaterThanOrEqual(lower);
+        expect(first).toBeLessThanOrEqual(upper);
+
+        const noFuzz = fuzzInterval(37, {
+            cardId: 900_001,
+            reps: 12,
+            minimum: 1,
+            maximum: 36500,
+            enabled: false,
+        });
+
+        expect(noFuzz).toBe(37);
+        expect(
+            fuzzInterval(2.49, {
+                cardId: 900_001,
+                reps: 12,
+                minimum: 1,
+                maximum: 36500,
+                enabled: true,
+            }),
+        ).toBe(2);
     });
 
     it("builds queue in learn -> review -> new order and applies sibling filtering", async () => {
@@ -473,6 +608,84 @@ describe("Phase 2 scheduler domain", () => {
         expect(queue.cards.map((card) => card.id)).toEqual([7461, 7462, 7464, 7463]);
         expect(queue.counts.new).toBe(3);
         expect(queue.counts.learning).toBe(1);
+    });
+
+    it("avoids immediate repeat of just-answered learning card when main queue is collapsed", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const deck = await decks.create("Queue::CollapsedLearningRepeat");
+
+        await notes.create({
+            id: 7470,
+            guid: "collapsed-learning-repeat-0",
+            mid: 101,
+            fields: ["front-0", "back-0"],
+        });
+        await notes.create({
+            id: 7471,
+            guid: "collapsed-learning-repeat-1",
+            mid: 101,
+            fields: ["front-1", "back-1"],
+        });
+
+        await cards.create({
+            id: 74711,
+            nid: 7470,
+            did: deck.id,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime() + 60_000,
+            left: 1,
+        });
+        await cards.create({
+            id: 74712,
+            nid: 7471,
+            did: deck.id,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime() + 120_000,
+            left: 1,
+        });
+
+        const queueBuilder = new SchedulerQueueBuilder(connection);
+
+        const baseline = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: deck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                learnAheadSeconds: 20 * 60,
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+        });
+
+        expect(baseline.cards.map((card) => card.id)).toEqual([74711, 74712]);
+
+        const deferredRepeat = await queueBuilder.buildQueue({
+            now: FIXED_NOW,
+            deckId: deck.id,
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                learnAheadSeconds: 20 * 60,
+                limits: {
+                    learningPerDay: 10,
+                    reviewsPerDay: 10,
+                    newPerDay: 10,
+                },
+            },
+            avoidImmediateLearningRepeatCardId: 74711,
+        });
+
+        expect(deferredRepeat.cards.map((card) => card.id)).toEqual([74712, 74711]);
+        expect(deferredRepeat.counts.learning).toBe(2);
     });
 
     it("intersperses review and new cards like Anki", async () => {
@@ -989,6 +1202,110 @@ describe("Phase 2 scheduler domain", () => {
         expect(preview.again.nextCard.type).toBe(CardType.Relearning);
         expect(preview.again.nextCard.queue).toBe(CardQueue.Learning);
         expect(againMinutes).toBe(10);
+    });
+
+    it("does not increment lapses for Again while already in Relearning", () => {
+        const engine = new SchedulerEngine();
+
+        const relearningCard = createCard({
+            id: 1008,
+            nid: 5008,
+            did: 1,
+            ord: 0,
+            type: CardType.Relearning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime(),
+            ivl: 1,
+            factor: 2500,
+            reps: 12,
+            lapses: 3,
+            left: 1,
+            data: JSON.stringify({
+                scheduler: "fsrs",
+                fsrs: {
+                    stability: 1.2,
+                    difficulty: 6,
+                    lastReview: FIXED_NOW.getTime() - 10 * 60_000,
+                    elapsedDays: 0,
+                    scheduledDays: 1,
+                },
+            }),
+        });
+
+        const result = engine.answerCard({
+            card: relearningCard,
+            rating: "again",
+            config: {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                enableFuzz: false,
+                relearningSteps: ["10m"],
+                now: FIXED_NOW,
+            },
+            now: FIXED_NOW,
+            answerMillis: 500,
+        });
+
+        expect(result.nextCard.type).toBe(CardType.Relearning);
+        expect(result.nextCard.queue).toBe(CardQueue.Learning);
+        expect(result.nextCard.lapses).toBe(relearningCard.lapses);
+    });
+
+    it("applies hidden Anki learning-delay fuzz on answer without changing preview timing", async () => {
+        const decks = new DecksRepository(connection);
+        const notes = new NotesRepository(connection);
+        const cards = new CardsRepository(connection);
+
+        const deck = await decks.create("Answer::LearningFuzz");
+        await notes.create({
+            id: 8400,
+            guid: "learning-fuzz-note",
+            mid: 101,
+            fields: ["question", "answer"],
+        });
+
+        await cards.create({
+            id: 8401,
+            nid: 8400,
+            did: deck.id,
+            ord: 0,
+            type: CardType.New,
+            queue: CardQueue.New,
+            due: FIXED_DAY,
+        });
+
+        const original = await cards.getById(8401);
+        expect(original).not.toBeNull();
+
+        const config: SchedulerConfig = {
+            ...DEFAULT_SCHEDULER_CONFIG,
+            enableFuzz: false,
+            learningSteps: ["1m", "10m"],
+            now: FIXED_NOW,
+        };
+
+        const engine = new SchedulerEngine();
+        const preview = engine.previewCard(original as Card, config, FIXED_NOW);
+        const previewGoodSeconds = Math.round((preview.good.due.getTime() - FIXED_NOW.getTime()) / 1000);
+
+        expect(previewGoodSeconds).toBe(600);
+
+        const service = new SchedulerAnsweringService(connection, engine);
+        const result = await service.answerCardById(8401, "good", config, FIXED_NOW, 300);
+
+        expect(result.nextCard.queue).toBe(CardQueue.Learning);
+
+        const answerSeconds = Math.round((result.nextCard.due - FIXED_NOW.getTime()) / 1000);
+        const expected = fuzzLearningIntervalSeconds(600, {
+            cardId: 8401,
+            reps: 0,
+        });
+
+        expect(answerSeconds).toBe(expected);
+        expect(answerSeconds).toBeGreaterThanOrEqual(600);
+        expect(answerSeconds).toBeLessThan(750);
+
+        const persisted = await cards.getById(8401);
+        expect(persisted?.due).toBe(result.nextCard.due);
     });
 
     it("answers card, writes revlog, marks leech, and buries siblings", async () => {

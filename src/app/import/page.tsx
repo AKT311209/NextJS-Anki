@@ -2,6 +2,7 @@
 
 import { releaseProxy, wrap, type Remote } from "comlink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useCollection } from "@/hooks/use-collection";
 import {
     exportCollectionAsApkg,
@@ -355,10 +356,18 @@ export default function ImportPage() {
     return (
         <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
             <header className="space-y-2">
-                <h1 className="text-3xl font-bold tracking-tight text-slate-100">Import & Export</h1>
+                <div className="flex items-center gap-3">
+                    <Link
+                        href="/"
+                        className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-300 transition hover:bg-slate-800"
+                    >
+                        &larr; Home
+                    </Link>
+                    <h1 className="text-3xl font-bold tracking-tight text-slate-100">Import & Export</h1>
+                </div>
                 <p className="max-w-3xl text-sm text-slate-300 sm:text-base">
-                    Phase 06 tooling: import Anki `.apkg` packages, import CSV/TSV with field mapping,
-                    and export the local collection back to `.apkg`.
+                    Import Anki <code>.apkg</code> packages or CSV/TSV files, and export your collection
+                    back to <code>.apkg</code>.
                 </p>
             </header>
 

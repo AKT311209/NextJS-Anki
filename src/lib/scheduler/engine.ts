@@ -10,10 +10,11 @@ import {
     type SchedulerTransition,
 } from "@/lib/types/scheduler";
 import { fuzzInterval } from "@/lib/scheduler/fuzz";
-import { buildFsrsParameters, firstStepMinutes, resolveSchedulerConfig } from "@/lib/scheduler/params";
+import { buildFsrsParameters, firstStepMinutes, parseStepToMinutes, resolveSchedulerConfig } from "@/lib/scheduler/params";
 import {
     elapsedSchedulerDays,
     extractFsrsMemory,
+    fromDayNumber,
     type FsrsCardState,
     mapFsrsStateToCardType,
     mapReviewRatingToGrade,
@@ -24,6 +25,7 @@ import {
 } from "@/lib/scheduler/states";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_SECONDS = 24 * 60 * 60;
 
 export class SchedulerEngine {
     private readonly baseConfig: SchedulerConfig;
@@ -115,27 +117,12 @@ export class SchedulerEngine {
         elapsedDays: number,
     ): SchedulerTransition {
         const intervalDays = Math.max(0, item.intervalDays);
-        let scheduledDays = Math.max(0, Math.trunc(intervalDays));
-        let due = new Date(now.getTime() + intervalDays * DAY_MS);
+        const transition = this.resolveFsrsTransitionDecision(previousCard, rating, intervalDays, config, now);
 
-        const nextState = inferNextFsrsState(previousCard, rating, intervalDays);
-        const nextType = mapFsrsStateToCardType(nextState);
-        let nextQueue = queueForState(nextState, intervalDays);
-
-        const useStepDelay = rating === "again" && (nextType === CardType.Learning || nextType === CardType.Relearning);
-
-        if (useStepDelay) {
-            const relearning = nextType === CardType.Relearning;
-            const minutes = firstStepMinutes(config, relearning);
-            due = new Date(now.getTime() + minutes * 60 * 1000);
-            scheduledDays = Math.max(0, Math.floor(minutes / (60 * 24)));
-
-            if (minutes >= 24 * 60) {
-                nextQueue = CardQueue.DayLearning;
-            } else {
-                nextQueue = CardQueue.Learning;
-            }
-        }
+        let scheduledDays = transition.scheduledDays;
+        let due = transition.due;
+        let nextQueue = transition.nextQueue;
+        const nextType = transition.nextType;
 
         // Enforce minimum interval for cards graduating to Review.
         // FSRS can return scheduled_days < 1 (e.g. 0.3),
@@ -148,13 +135,15 @@ export class SchedulerEngine {
 
         if (nextQueue === CardQueue.DayLearning && scheduledDays < 1) {
             scheduledDays = 1;
+            due = fromDayNumber(toDayNumber(now) + scheduledDays);
         }
 
         if (config.enableFuzz && scheduledDays > 1 && nextQueue === CardQueue.Review) {
-            scheduledDays = fuzzInterval(scheduledDays, {
+            scheduledDays = fuzzInterval(intervalDays, {
                 cardId: previousCard.id,
-                now,
-                maximumInterval: config.maximumInterval,
+                reps: previousCard.reps,
+                minimum: Math.max(1, config.minimumInterval),
+                maximum: config.maximumInterval,
             });
             due = new Date(now.getTime() + scheduledDays * DAY_MS);
             nextQueue = CardQueue.Review;
@@ -172,7 +161,7 @@ export class SchedulerEngine {
         const lapses = previousCard.lapses + (rating === "again" && isLapseCandidate(previousCard.type) ? 1 : 0);
 
         const learningLeft = nextQueue === CardQueue.Learning || nextQueue === CardQueue.DayLearning
-            ? Math.max(1, previousCard.left || 1)
+            ? Math.max(0, transition.remainingSteps)
             : 0;
 
         const nextCard: Card = {
@@ -199,6 +188,294 @@ export class SchedulerEngine {
             scheduledDays,
             fsrs: fsrsMemory,
             reviewKind: inferRevlogType(previousCard.type, nextType),
+        };
+    }
+
+    private resolveFsrsTransitionDecision(
+        previousCard: Card,
+        rating: ReviewRating,
+        intervalDays: number,
+        config: SchedulerConfig,
+        now: Date,
+    ): ResolvedFsrsTransition {
+        if (previousCard.type === CardType.New || previousCard.type === CardType.Learning) {
+            return this.resolveLearningFsrsTransition(previousCard, rating, intervalDays, config, now);
+        }
+
+        if (previousCard.type === CardType.Relearning) {
+            return this.resolveRelearningFsrsTransition(previousCard, rating, intervalDays, config, now);
+        }
+
+        if (previousCard.type === CardType.Review && rating === "again") {
+            return this.resolveReviewAgainFsrsTransition(intervalDays, config, now);
+        }
+
+        return this.resolveFsrsDefaultTransition(previousCard, rating, intervalDays, now);
+    }
+
+    private resolveLearningFsrsTransition(
+        previousCard: Card,
+        rating: ReviewRating,
+        intervalDays: number,
+        config: SchedulerConfig,
+        now: Date,
+    ): ResolvedFsrsTransition {
+        const learningStepDelays = toStepDelaysSeconds(config.learningSteps);
+        const failedRemainingSteps = learningStepDelays.length;
+        const remainingSteps = previousCard.type === CardType.New
+            ? failedRemainingSteps
+            : normalizeRemainingSteps(previousCard.left, failedRemainingSteps);
+
+        if (rating === "again") {
+            const againDelay = learningStepDelays[0];
+            if (againDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, againDelay);
+                return {
+                    nextType: CardType.Learning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps: failedRemainingSteps,
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: learningStepDelays.length,
+                shortTermType: CardType.Learning,
+                shortTermRemainingSteps: failedRemainingSteps,
+            });
+        }
+
+        if (rating === "hard") {
+            const hardDelay = hardDelaySeconds(learningStepDelays, remainingSteps);
+            if (hardDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, hardDelay);
+                return {
+                    nextType: CardType.Learning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps,
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: learningStepDelays.length,
+                shortTermType: CardType.Learning,
+                shortTermRemainingSteps: remainingSteps,
+            });
+        }
+
+        if (rating === "good") {
+            const goodDelay = goodDelaySeconds(learningStepDelays, remainingSteps);
+            if (goodDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, goodDelay);
+                return {
+                    nextType: CardType.Learning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps: remainingStepsForGood(learningStepDelays, remainingSteps),
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: learningStepDelays.length,
+                shortTermType: CardType.Learning,
+                shortTermRemainingSteps: remainingSteps,
+            });
+        }
+
+        return this.resolveFsrsDefaultTransition(previousCard, rating, intervalDays, now);
+    }
+
+    private resolveRelearningFsrsTransition(
+        previousCard: Card,
+        rating: ReviewRating,
+        intervalDays: number,
+        config: SchedulerConfig,
+        now: Date,
+    ): ResolvedFsrsTransition {
+        const relearningStepDelays = toStepDelaysSeconds(config.relearningSteps);
+        const failedRemainingSteps = relearningStepDelays.length;
+        const remainingSteps = normalizeRemainingSteps(previousCard.left, failedRemainingSteps);
+
+        if (rating === "again") {
+            const againDelay = relearningStepDelays[0];
+            if (againDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, againDelay);
+                return {
+                    nextType: CardType.Relearning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps: failedRemainingSteps,
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: relearningStepDelays.length,
+                shortTermType: CardType.Relearning,
+                shortTermRemainingSteps: failedRemainingSteps,
+            });
+        }
+
+        if (rating === "hard") {
+            const hardDelay = hardDelaySeconds(relearningStepDelays, remainingSteps);
+            if (hardDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, hardDelay);
+                return {
+                    nextType: CardType.Relearning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps,
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: relearningStepDelays.length,
+                shortTermType: CardType.Relearning,
+                shortTermRemainingSteps: remainingSteps,
+            });
+        }
+
+        if (rating === "good") {
+            const goodRemainingSteps = remainingStepsForGood(relearningStepDelays, remainingSteps);
+            const goodDelay = goodDelaySeconds(relearningStepDelays, remainingSteps);
+            if (goodDelay !== undefined) {
+                const schedule = this.scheduleLearningSeconds(now, goodDelay);
+                return {
+                    nextType: CardType.Relearning,
+                    nextQueue: schedule.nextQueue,
+                    due: schedule.due,
+                    scheduledDays: schedule.scheduledDays,
+                    remainingSteps: goodRemainingSteps,
+                };
+            }
+
+            return this.resolveFsrsStepFallback({
+                now,
+                intervalDays,
+                config,
+                stepCount: relearningStepDelays.length,
+                shortTermType: CardType.Relearning,
+                shortTermRemainingSteps: goodRemainingSteps,
+            });
+        }
+
+        return this.resolveFsrsDefaultTransition(previousCard, rating, intervalDays, now);
+    }
+
+    private resolveReviewAgainFsrsTransition(
+        intervalDays: number,
+        config: SchedulerConfig,
+        now: Date,
+    ): ResolvedFsrsTransition {
+        const relearningStepDelays = toStepDelaysSeconds(config.relearningSteps);
+        const failedRemainingSteps = relearningStepDelays.length;
+        const againDelay = relearningStepDelays[0];
+
+        if (againDelay !== undefined) {
+            const schedule = this.scheduleLearningSeconds(now, againDelay);
+            return {
+                nextType: CardType.Relearning,
+                nextQueue: schedule.nextQueue,
+                due: schedule.due,
+                scheduledDays: schedule.scheduledDays,
+                remainingSteps: failedRemainingSteps,
+            };
+        }
+
+        return this.resolveFsrsStepFallback({
+            now,
+            intervalDays,
+            config,
+            stepCount: relearningStepDelays.length,
+            shortTermType: CardType.Relearning,
+            shortTermRemainingSteps: failedRemainingSteps,
+        });
+    }
+
+    private resolveFsrsStepFallback(options: FsrsStepFallbackOptions): ResolvedFsrsTransition {
+        if (shouldUseFsrsShortTerm(options.config, options.intervalDays, options.stepCount > 0)) {
+            const schedule = this.scheduleLearningSeconds(
+                options.now,
+                Math.max(0, Math.trunc(options.intervalDays * DAY_SECONDS)),
+            );
+
+            return {
+                nextType: options.shortTermType,
+                nextQueue: schedule.nextQueue,
+                due: schedule.due,
+                scheduledDays: schedule.scheduledDays,
+                remainingSteps: options.shortTermRemainingSteps,
+            };
+        }
+
+        const scheduledDays = Math.max(0, Math.trunc(options.intervalDays));
+        return {
+            nextType: CardType.Review,
+            nextQueue: CardQueue.Review,
+            due: new Date(options.now.getTime() + scheduledDays * DAY_MS),
+            scheduledDays,
+            remainingSteps: 0,
+        };
+    }
+
+    private resolveFsrsDefaultTransition(
+        previousCard: Card,
+        rating: ReviewRating,
+        intervalDays: number,
+        now: Date,
+    ): ResolvedFsrsTransition {
+        const nextState = inferNextFsrsState(previousCard, rating, intervalDays);
+        const nextType = mapFsrsStateToCardType(nextState);
+        const nextQueue = queueForState(nextState, intervalDays);
+
+        return {
+            nextType,
+            nextQueue,
+            due: new Date(now.getTime() + intervalDays * DAY_MS),
+            scheduledDays: Math.max(0, Math.trunc(intervalDays)),
+            remainingSteps: 0,
+        };
+    }
+
+    private scheduleLearningSeconds(now: Date, intervalSeconds: number): LearningSchedule {
+        const safeSeconds = Math.max(0, Math.trunc(intervalSeconds));
+        const secondsUntilRollover = secondsUntilNextRollover(now);
+
+        if (safeSeconds >= secondsUntilRollover) {
+            const days = Math.floor((safeSeconds - secondsUntilRollover) / DAY_SECONDS) + 1;
+            const dueDay = toDayNumber(now) + days;
+
+            return {
+                nextQueue: CardQueue.DayLearning,
+                due: fromDayNumber(dueDay),
+                scheduledDays: days,
+            };
+        }
+
+        return {
+            nextQueue: CardQueue.Learning,
+            due: new Date(now.getTime() + safeSeconds * 1000),
+            scheduledDays: 0,
         };
     }
 
@@ -267,8 +544,9 @@ export class SchedulerEngine {
             if (config.enableFuzz && scheduledDays > 1) {
                 scheduledDays = fuzzInterval(scheduledDays, {
                     cardId: previousCard.id,
-                    now,
-                    maximumInterval: config.maximumInterval,
+                    reps: previousCard.reps,
+                    minimum: Math.max(1, config.minimumInterval),
+                    maximum: config.maximumInterval,
                 });
             }
 
@@ -324,6 +602,29 @@ interface FsrsInputState {
     readonly stability?: number;
     readonly difficulty?: number;
     readonly daysElapsed: number;
+}
+
+interface ResolvedFsrsTransition {
+    readonly nextType: CardType;
+    readonly nextQueue: CardQueue;
+    readonly due: Date;
+    readonly scheduledDays: number;
+    readonly remainingSteps: number;
+}
+
+interface FsrsStepFallbackOptions {
+    readonly now: Date;
+    readonly intervalDays: number;
+    readonly config: SchedulerConfig;
+    readonly stepCount: number;
+    readonly shortTermType: CardType;
+    readonly shortTermRemainingSteps: number;
+}
+
+interface LearningSchedule {
+    readonly nextQueue: CardQueue;
+    readonly due: Date;
+    readonly scheduledDays: number;
 }
 
 function resolveFsrsInput(card: Card, now: Date): FsrsInputState {
@@ -405,7 +706,103 @@ function inferNextFsrsState(previousCard: Card, rating: ReviewRating, intervalDa
 }
 
 function isLapseCandidate(cardType: number): boolean {
-    return cardType === CardType.Review || cardType === CardType.Relearning;
+    return cardType === CardType.Review;
+}
+
+function toStepDelaysSeconds(steps: readonly string[]): number[] {
+    return steps.map((step) => Math.max(0, Math.trunc(parseStepToMinutes(step) * 60)));
+}
+
+function normalizeRemainingSteps(currentLeft: number, totalSteps: number): number {
+    if (totalSteps <= 0) {
+        return 0;
+    }
+
+    const normalized = Number.isFinite(currentLeft) ? Math.trunc(currentLeft) : 0;
+    return normalized > 0 ? normalized : totalSteps;
+}
+
+function stepIndexForRemaining(stepDelays: readonly number[], remainingSteps: number): number {
+    const total = stepDelays.length;
+    if (total === 0) {
+        return 0;
+    }
+
+    const normalizedRemaining = Math.max(0, Math.trunc(remainingSteps));
+    return Math.min(Math.max(total - (normalizedRemaining % 1000), 0), total - 1);
+}
+
+function hardDelaySeconds(stepDelays: readonly number[], remainingSteps: number): number | undefined {
+    if (stepDelays.length === 0) {
+        return undefined;
+    }
+
+    const index = stepIndexForRemaining(stepDelays, remainingSteps);
+    const current = stepDelays[index] ?? stepDelays[0];
+
+    if (current === undefined) {
+        return undefined;
+    }
+
+    if (index === 0) {
+        return hardDelayForFirstStep(stepDelays, current);
+    }
+
+    return current;
+}
+
+function hardDelayForFirstStep(stepDelays: readonly number[], againSeconds: number): number {
+    const nextDelay = stepDelays[1];
+    if (nextDelay !== undefined) {
+        return maybeRoundInDays(Math.trunc((againSeconds + nextDelay) / 2));
+    }
+
+    const increased = Math.trunc((againSeconds * 3) / 2);
+    const bounded = Math.min(increased, againSeconds + DAY_SECONDS);
+    return maybeRoundInDays(bounded);
+}
+
+function goodDelaySeconds(stepDelays: readonly number[], remainingSteps: number): number | undefined {
+    if (stepDelays.length === 0) {
+        return undefined;
+    }
+
+    const index = stepIndexForRemaining(stepDelays, remainingSteps);
+    return stepDelays[index + 1];
+}
+
+function remainingStepsForGood(stepDelays: readonly number[], remainingSteps: number): number {
+    if (stepDelays.length === 0) {
+        return 0;
+    }
+
+    const index = stepIndexForRemaining(stepDelays, remainingSteps);
+    return Math.max(0, stepDelays.length - (index + 1));
+}
+
+function maybeRoundInDays(seconds: number): number {
+    if (seconds > DAY_SECONDS) {
+        return Math.max(1, Math.round(seconds / DAY_SECONDS)) * DAY_SECONDS;
+    }
+
+    return seconds;
+}
+
+function shouldUseFsrsShortTerm(config: SchedulerConfig, intervalDays: number, hasConfiguredSteps: boolean): boolean {
+    if (!config.enableShortTerm) {
+        return false;
+    }
+
+    if (intervalDays >= 0.5) {
+        return false;
+    }
+
+    return config.fsrsShortTermWithSteps || !hasConfiguredSteps;
+}
+
+function secondsUntilNextRollover(now: Date): number {
+    const nextRollover = fromDayNumber(toDayNumber(now) + 1);
+    return Math.max(0, Math.trunc((nextRollover.getTime() - now.getTime()) / 1000));
 }
 
 function inferRevlogType(previousType: number, nextType: CardType): number {

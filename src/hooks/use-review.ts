@@ -213,6 +213,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     deckId: state.deckId ?? undefined,
                     config: state.config,
                     allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
+                    avoidImmediateLearningRepeatCardId: result.nextCard.id,
                 });
                 const latestCompletion = await loadReviewCompletionState(connection, state.deckId, now);
 

@@ -32,6 +32,7 @@ export interface SchedulerConfig {
     readonly maximumInterval: number;
     readonly enableFuzz: boolean;
     readonly enableShortTerm: boolean;
+    readonly fsrsShortTermWithSteps: boolean;
     readonly learningSteps: readonly string[];
     readonly relearningSteps: readonly string[];
     readonly intervalModifier: number;
@@ -63,6 +64,7 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     maximumInterval: 36500,
     enableFuzz: true,
     enableShortTerm: true,
+    fsrsShortTermWithSteps: false,
     learningSteps: ["1m", "10m"],
     relearningSteps: ["10m"],
     intervalModifier: 1,
@@ -108,6 +110,7 @@ export interface QueueBuildRequest {
     readonly config: SchedulerConfig;
     readonly buriedCardIds?: ReadonlySet<number>;
     readonly allowedNewCardIds?: ReadonlySet<number>;
+    readonly avoidImmediateLearningRepeatCardId?: number;
 }
 
 export interface QueueBuildResult {

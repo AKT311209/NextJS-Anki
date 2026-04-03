@@ -29,8 +29,7 @@ export default function HomePage() {
             <header className="space-y-3">
                 <h1 className="text-4xl font-bold tracking-tight text-slate-100">NextJS-Anki</h1>
                 <p className="max-w-3xl text-sm text-slate-300 sm:text-base">
-                    Phase 05 is live: deck hierarchy management, note workflows, browser search, and deck options all wired
-                    to the in-browser SQLite collection.
+                    A web-based spaced repetition app powered by FSRS scheduling, running entirely in your browser.
                 </p>
 
                 <ul className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">

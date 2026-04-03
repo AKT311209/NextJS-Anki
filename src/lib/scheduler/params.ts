@@ -39,6 +39,7 @@ export function resolveSchedulerConfig(overrides: Partial<SchedulerConfig> = {})
         ...overrides,
         requestRetention: clamp(overrides.requestRetention ?? base.requestRetention, 0.01, 0.9999),
         maximumInterval: Math.max(1, Math.trunc(overrides.maximumInterval ?? base.maximumInterval)),
+        fsrsShortTermWithSteps: overrides.fsrsShortTermWithSteps ?? base.fsrsShortTermWithSteps,
         learningSteps: normalizeSteps(overrides.learningSteps ?? base.learningSteps),
         relearningSteps: normalizeSteps(overrides.relearningSteps ?? base.relearningSteps),
         intervalModifier: clamp(overrides.intervalModifier ?? base.intervalModifier, 0.1, 10),
@@ -240,6 +241,13 @@ export function schedulerOverridesFromUnknown(config: unknown): Partial<Schedule
         firstKnown(record.fsrsWeights, record.fsrs_params_6, record.fsrs_params_5, record.fsrs_params_4),
     );
 
+    const fsrsShortTermWithSteps = firstBoolean(
+        record.fsrsShortTermWithSteps,
+        record.fsrs_short_term_with_steps,
+        record.fsrsShortTermWithStepsEnabled,
+        record.fsrs_short_term_with_steps_enabled,
+    );
+
     const explicitBurySiblings = firstBoolean(record.burySiblings, record.bury);
     const buryNew = firstBoolean(record.buryNew, getNestedBoolean(record.new, "bury"), explicitBurySiblings);
     const buryReviews = firstBoolean(
@@ -278,6 +286,7 @@ export function schedulerOverridesFromUnknown(config: unknown): Partial<Schedule
             record.new_cards_ignore_review_limit,
         ),
         applyAllParentLimits: firstBoolean(record.applyAllParentLimits, record.apply_all_parent_limits),
+        fsrsShortTermWithSteps,
         fsrsWeights,
         limits: {
             newPerDay: newPerDay ?? 20,

@@ -1,10 +1,11 @@
 import { SchedulerEngine } from "@/lib/scheduler/engine";
+import { fuzzLearningIntervalSeconds } from "@/lib/scheduler/fuzz";
 import { resolveSchedulerConfig } from "@/lib/scheduler/params";
 import { burySiblingCards } from "@/lib/scheduler/burying";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository } from "@/lib/storage/repositories/cards";
 import { RevlogRepository } from "@/lib/storage/repositories/revlog";
-import type { Card } from "@/lib/types/card";
+import { CardQueue, type Card } from "@/lib/types/card";
 import type { AnswerCardInput, AnswerCardResult, ReviewRating, SchedulerConfig } from "@/lib/types/scheduler";
 
 export interface PersistedAnswerCardResult extends AnswerCardResult {
@@ -25,10 +26,11 @@ export class SchedulerAnsweringService {
 
     public async answerCard(input: AnswerCardInput): Promise<PersistedAnswerCardResult> {
         const config = resolveSchedulerConfig(input.config);
-        const result = await this.engine.answerCard({
+        const rawResult = await this.engine.answerCard({
             ...input,
             config,
         });
+        const result = applyLearningDelayFuzz(rawResult, input.now);
         await this.persistResult(result);
 
         let buriedSiblingCardIds: number[] = [];
@@ -87,6 +89,33 @@ export class SchedulerAnsweringService {
             usn: result.revlog.usn ?? result.nextCard.usn,
         });
     }
+}
+
+function applyLearningDelayFuzz(result: AnswerCardResult, now: Date): AnswerCardResult {
+    if (result.nextCard.queue !== CardQueue.Learning) {
+        return result;
+    }
+
+    const scheduledSeconds = Math.max(0, Math.trunc((result.nextCard.due - now.getTime()) / 1000));
+    const fuzzedSeconds = fuzzLearningIntervalSeconds(scheduledSeconds, {
+        cardId: result.previousCard.id,
+        reps: result.previousCard.reps,
+    });
+
+    if (fuzzedSeconds === scheduledSeconds) {
+        return result;
+    }
+
+    const dueMs = now.getTime() + fuzzedSeconds * 1000;
+
+    return {
+        ...result,
+        due: new Date(dueMs),
+        nextCard: {
+            ...result.nextCard,
+            due: dueMs,
+        },
+    };
 }
 
 function toCardPatch(card: Card): Omit<Card, "id"> {
