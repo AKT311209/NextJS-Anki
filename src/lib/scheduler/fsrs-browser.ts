@@ -62,9 +62,38 @@ export const DEFAULT_FSRS_WEIGHTS: readonly number[] = [
     0.1542,
 ] as const;
 
-const fsrsBrowserModule = await loadFsrsBrowserModule();
+let fsrsBrowserModule: FsrsBrowserModule | null = null;
+let initPromise: Promise<FsrsBrowserModule> | null = null;
+
+function getOrInitModule(): Promise<FsrsBrowserModule> {
+    if (fsrsBrowserModule) return Promise.resolve(fsrsBrowserModule);
+    if (!initPromise) {
+        initPromise = loadFsrsBrowserModule().then((m) => {
+            fsrsBrowserModule = m;
+            return m;
+        });
+    }
+    return initPromise;
+}
+
+/**
+ * Pre-load the FSRS WASM module. Call this early in the app lifecycle
+ * (e.g. inside a useEffect) to ensure the module is ready before
+ * synchronous helpers like {@link createFsrsScheduler} are used.
+ */
+export async function initFsrs(): Promise<void> {
+    await getOrInitModule();
+}
+
+// Auto-start loading on the client so it's ready by first use.
+if (typeof window !== "undefined") {
+    getOrInitModule();
+}
 
 export function createFsrsScheduler(weights?: readonly number[]): FsrsInstance {
+    if (!fsrsBrowserModule) {
+        throw new Error("FSRS WASM module not loaded yet — call initFsrs() first");
+    }
     const normalized = normalizeFsrsWeights(weights);
     return new fsrsBrowserModule.Fsrs(new Float32Array(normalized));
 }
