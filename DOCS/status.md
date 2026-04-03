@@ -789,3 +789,27 @@
 							- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (24 tests)
 							- `npm run typecheck && npm run lint` ✅
 
+## 2026-04-03
+
+- Fixed stale "Next card" ETA in the review completed panel (it could appear stuck at values like 21 minutes).
+	- Root cause:
+		- `useReview()` only refreshed completion summary (`dueLaterToday`, `nextCardDueInMinutes`) on session init, answer, and undo.
+		- While the queue stayed empty/completed, elapsed time was not recomputed, so the ETA did not update.
+	- Fix implemented:
+		- `src/hooks/use-review.ts`
+			- Added completion-summary polling while review stage is `completed`.
+			- Poll interval: 30 seconds.
+			- Each tick reloads completion summary from DB using current time and updates state only when values change.
+			- Polling errors are intentionally ignored as transient; manual "Refresh queue" remains the explicit recovery path.
+	- Follow-up correction:
+		- Adjusted completion ETA to reflect when a card becomes visible in queue (learn-ahead aware), not only raw due timestamp.
+		- `loadReviewCompletionState()` now computes next availability with learn-ahead offset (`nextDueAt - learnAheadSeconds`).
+		- `useReview()` now passes scheduler `learnAheadSeconds` on init/answer/undo/polling completion refresh.
+	- Regression coverage:
+		- `src/hooks/__tests__/phase4-review-completion.test.ts`
+			- Added `recomputes next-card ETA as time advances` to verify ETA decreases when `now` advances.
+			- Added `reports next-card ETA using learn-ahead availability` to verify 21m due + 20m learn-ahead reports as 1m until visible.
+	- Verification completed:
+		- `npm run test -- src/hooks/__tests__/phase4-review-completion.test.ts` ✅
+		- `npm run typecheck` ✅
+

@@ -73,6 +73,7 @@ const EMPTY_REVIEW_COMPLETION_STATE: ReviewCompletionState = {
 
 const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
 const REVIEW_NEW_SCOPE_STORAGE_PREFIX = "nextjs-anki:review:new-scope:v1";
+const REVIEW_COMPLETION_POLL_INTERVAL_MS = 30_000;
 
 type NotetypeFieldShape = {
     readonly name?: unknown;
@@ -96,6 +97,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const collection = useCollection();
 
     const stage = useReviewStore((state) => state.stage);
+    const schedulerConfig = useReviewStore((state) => state.config);
     const currentCard = useReviewStore((state) => state.currentCard);
     const queue = useReviewStore((state) => state.queue);
     const counts = useReviewStore((state) => state.counts);
@@ -136,7 +138,12 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 config,
                 allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
-            const latestCompletion = await loadReviewCompletionState(collection.connection, options.deckId, now);
+            const latestCompletion = await loadReviewCompletionState(
+                collection.connection,
+                options.deckId,
+                now,
+                config.learnAheadSeconds,
+            );
 
             if (sessionNewCardIdsRef.current === null) {
                 const scopedNewIds = new Set(
@@ -215,7 +222,12 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
                     avoidImmediateLearningRepeatCardId: result.nextCard.id,
                 });
-                const latestCompletion = await loadReviewCompletionState(connection, state.deckId, now);
+                const latestCompletion = await loadReviewCompletionState(
+                    connection,
+                    state.deckId,
+                    now,
+                    state.config.learnAheadSeconds,
+                );
 
                 const nextCard = await buildActiveReviewCard(
                     connection,
@@ -272,7 +284,12 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 config: state.config,
                 allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
-            const latestCompletion = await loadReviewCompletionState(connection, state.deckId, now);
+            const latestCompletion = await loadReviewCompletionState(
+                connection,
+                state.deckId,
+                now,
+                state.config.learnAheadSeconds,
+            );
 
             const restoredCurrent = await buildActiveReviewCard(
                 connection,
@@ -330,6 +347,52 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
         shownAtMsRef.current = nowProvider().getTime();
     }, [currentCard, stage, nowProvider]);
 
+    useEffect(() => {
+        const connection = collection.connection;
+
+        if (!collection.ready || !connection || stage !== "completed") {
+            return;
+        }
+
+        let disposed = false;
+
+        const refreshCompletionState = async () => {
+            const now = nowProvider();
+
+            try {
+                const latestCompletion = await loadReviewCompletionState(
+                    connection,
+                    options.deckId,
+                    now,
+                    schedulerConfig.learnAheadSeconds,
+                );
+                if (disposed) {
+                    return;
+                }
+
+                setCompletionState((previous) =>
+                    previous.dueLaterToday === latestCompletion.dueLaterToday &&
+                        previous.nextCardDueInMinutes === latestCompletion.nextCardDueInMinutes
+                        ? previous
+                        : latestCompletion,
+                );
+            } catch {
+                // Ignore transient polling errors while idle; manual refresh exposes actionable failures.
+            }
+        };
+
+        void refreshCompletionState();
+
+        const timerId = window.setInterval(() => {
+            void refreshCompletionState();
+        }, REVIEW_COMPLETION_POLL_INTERVAL_MS);
+
+        return () => {
+            disposed = true;
+            window.clearInterval(timerId);
+        };
+    }, [collection.connection, collection.ready, nowProvider, options.deckId, schedulerConfig.learnAheadSeconds, stage]);
+
     return useMemo(
         () => ({
             ready: collection.ready,
@@ -375,8 +438,10 @@ async function loadReviewCompletionState(
     connection: CollectionDatabaseConnection,
     deckId: number | null,
     now: Date,
+    learnAheadSeconds = 0,
 ): Promise<ReviewCompletionState> {
     const nowMs = now.getTime();
+    const learnAheadMs = Math.max(0, Math.trunc(learnAheadSeconds * 1000));
     const nextDayStartMs = fromDayNumber(toDayNumber(now) + 1).getTime();
 
     const row = deckId === null
@@ -413,7 +478,8 @@ async function loadReviewCompletionState(
         return EMPTY_REVIEW_COMPLETION_STATE;
     }
 
-    const nextCardDueInMinutes = Math.max(1, Math.ceil(Math.max(0, nextDueAtMs - nowMs) / 60_000));
+    const nextCardAvailableAtMs = Math.max(nowMs, nextDueAtMs - learnAheadMs);
+    const nextCardDueInMinutes = Math.max(1, Math.ceil(Math.max(0, nextCardAvailableAtMs - nowMs) / 60_000));
 
     return {
         dueLaterToday,

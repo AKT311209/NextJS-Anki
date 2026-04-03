@@ -122,4 +122,54 @@ describe("Phase 4 review completion summary", () => {
         expect(summary.dueLaterToday).toBe(0);
         expect(summary.nextCardDueInMinutes).toBeNull();
     });
+
+    it("recomputes next-card ETA as time advances", async () => {
+        const now = new Date(2026, 3, 2, 10, 0, 0);
+        const cards = new CardsRepository(connection);
+
+        await cards.create({
+            id: 93_001,
+            nid: 93_001,
+            did: 13,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: now.getTime() + 5 * 60_000,
+        });
+
+        const initialSummary = await __reviewCompletion.loadReviewCompletionState(connection, 13, now);
+        expect(initialSummary.dueLaterToday).toBe(1);
+        expect(initialSummary.nextCardDueInMinutes).toBe(5);
+
+        const twoMinutesLater = new Date(now.getTime() + 2 * 60_000);
+        const laterSummary = await __reviewCompletion.loadReviewCompletionState(connection, 13, twoMinutesLater);
+
+        expect(laterSummary.dueLaterToday).toBe(1);
+        expect(laterSummary.nextCardDueInMinutes).toBe(3);
+    });
+
+    it("reports next-card ETA using learn-ahead availability", async () => {
+        const now = new Date(2026, 3, 2, 10, 0, 0);
+        const cards = new CardsRepository(connection);
+
+        await cards.create({
+            id: 94_001,
+            nid: 94_001,
+            did: 14,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: now.getTime() + 21 * 60_000,
+        });
+
+        const summary = await __reviewCompletion.loadReviewCompletionState(
+            connection,
+            14,
+            now,
+            20 * 60,
+        );
+
+        expect(summary.dueLaterToday).toBe(1);
+        expect(summary.nextCardDueInMinutes).toBe(1);
+    });
 });
