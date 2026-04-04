@@ -101,7 +101,7 @@ describe("Phase 7 statistics", () => {
         });
 
         await revlog.insert({
-            id: dayStart.getTime() + 2 * 60 * 60 * 1000,
+            id: encodeRevlogTimestamp(dayStart.getTime() + 2 * 60 * 60 * 1000, 1),
             cid: 5001,
             ease: 3,
             ivl: 30,
@@ -112,7 +112,7 @@ describe("Phase 7 statistics", () => {
         });
 
         await revlog.insert({
-            id: dayStart.getTime() + 4 * 60 * 60 * 1000,
+            id: encodeRevlogTimestamp(dayStart.getTime() + 4 * 60 * 60 * 1000, 2),
             cid: 5004,
             ease: 4,
             ivl: 5,
@@ -123,7 +123,7 @@ describe("Phase 7 statistics", () => {
         });
 
         await revlog.insert({
-            id: dayStart.getTime() + 6 * 60 * 60 * 1000,
+            id: encodeRevlogTimestamp(dayStart.getTime() + 6 * 60 * 60 * 1000, 3),
             cid: 5002,
             ease: 2,
             ivl: 1,
@@ -163,6 +163,7 @@ describe("Phase 7 statistics", () => {
         expect(snapshot.overview.stateCounts.suspended).toBe(1);
 
         expect(snapshot.reviewHeatmap.length).toBeGreaterThan(300);
+        expect(snapshot.reviewHeatmap.some((entry) => entry.reviews > 0)).toBe(true);
         expect(snapshot.retention.length).toBeLessThanOrEqual(30);
 
         const todayForecast = snapshot.forecast.find((entry) => entry.dayOffset === 0);
@@ -284,4 +285,10 @@ async function insertNoteAndCard(
         ivl: input.ivl,
         factor: input.factor,
     });
+}
+
+function encodeRevlogTimestamp(timestampMs: number, entropyDigit: number): number {
+    const normalizedTimestamp = Math.max(0, Math.trunc(timestampMs));
+    const normalizedDigit = Math.abs(Math.trunc(entropyDigit)) % 10;
+    return normalizedTimestamp * 10 + normalizedDigit;
 }

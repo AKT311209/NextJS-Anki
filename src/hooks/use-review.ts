@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCollection } from "@/hooks/use-collection";
 import { renderCardTemplatesAsync } from "@/lib/rendering/template-renderer";
 import { SchedulerAnsweringService } from "@/lib/scheduler/answering";
+import { unburyCards } from "@/lib/scheduler/burying";
 import { SchedulerEngine } from "@/lib/scheduler/engine";
 import { resolveSchedulerConfig } from "@/lib/scheduler/params";
 import { SchedulerQueueBuilder } from "@/lib/scheduler/queue";
@@ -12,7 +13,7 @@ import { formatAnkiAnswerButtonInterval } from "@/lib/scheduler/timespan";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { CardsRepository, type CardRecord } from "@/lib/storage/repositories/cards";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
-import { DecksRepository } from "@/lib/storage/repositories/decks";
+import { DecksRepository, type DeckRecord } from "@/lib/storage/repositories/decks";
 import { NotesRepository } from "@/lib/storage/repositories/notes";
 import { NotetypesRepository } from "@/lib/storage/repositories/notetypes";
 import { CardQueue, type Card } from "@/lib/types/card";
@@ -45,9 +46,6 @@ export interface UseReviewResult {
     readonly stage: "idle" | "loading" | "question" | "answer" | "completed" | "error";
     readonly hasCard: boolean;
     readonly currentCard: ActiveReviewCard | null;
-    readonly answered: number;
-    readonly remaining: number;
-    readonly total: number;
     readonly counts: {
         readonly learning: number;
         readonly review: number;
@@ -82,6 +80,17 @@ const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
 const REVIEW_NEW_SCOPE_STORAGE_PREFIX = "nextjs-anki:review:new-scope:v1";
 const REVIEW_COMPLETION_POLL_INTERVAL_MS = 30_000;
 
+interface ReviewNewScopeFingerprint {
+    readonly newCardGatherPriority: SchedulerNewCardGatherPriority;
+    readonly newCardSortOrder: SchedulerNewCardSortOrder;
+    readonly newReviewMix: SchedulerReviewMix;
+    readonly interdayLearningMix: SchedulerReviewMix;
+    readonly reviewSortOrder: SchedulerReviewSortOrder;
+    readonly newPerDay: number;
+    readonly reviewsPerDay: number;
+    readonly newCardsIgnoreReviewLimit: boolean;
+}
+
 type NotetypeFieldShape = {
     readonly name?: unknown;
     readonly ord?: unknown;
@@ -98,8 +107,6 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const nowProvider = useMemo(() => options.nowProvider ?? (() => new Date()), [options.nowProvider]);
     const engineRef = useRef(new SchedulerEngine());
     const shownAtMsRef = useRef<number>(0);
-    const sessionNewCardIdsRef = useRef<Set<number> | null>(null);
-    const sessionScopeKeyRef = useRef<string | null>(null);
 
     const collection = useCollection();
 
@@ -107,8 +114,8 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
     const schedulerConfig = useReviewStore((state) => state.config);
     const currentCard = useReviewStore((state) => state.currentCard);
     const queue = useReviewStore((state) => state.queue);
-    const counts = useReviewStore((state) => state.counts);
     const answered = useReviewStore((state) => state.answered);
+    const counts = useReviewStore((state) => state.counts);
     const history = useReviewStore((state) => state.history);
     const reviewError = useReviewStore((state) => state.error);
 
@@ -130,43 +137,25 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
         startLoading(options.deckId);
         setCompletionState(EMPTY_REVIEW_COMPLETION_STATE);
         const now = nowProvider();
-        const scopeKey = buildReviewScopeKey(options.deckId, toDayNumber(now));
-
-        if (sessionScopeKeyRef.current !== scopeKey) {
-            sessionScopeKeyRef.current = scopeKey;
-            sessionNewCardIdsRef.current = loadScopedNewCardIds(scopeKey);
-        }
 
         try {
             const config = await loadSchedulerConfig(collection.connection, options.deckId);
+
+            await maybeUnburyOnDayRollover(collection.connection, now, config.collectionDayOffset);
+
             const queueBuilder = new SchedulerQueueBuilder(collection.connection);
             const queueResult = await queueBuilder.buildQueue({
                 now,
                 deckId: options.deckId ?? undefined,
                 config,
-                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
             const latestCompletion = await loadReviewCompletionState(
                 collection.connection,
                 options.deckId,
                 now,
                 config.learnAheadSeconds,
+                config.collectionDayOffset,
             );
-
-            if (sessionNewCardIdsRef.current === null) {
-                const scopedNewIds = new Set(
-                    queueResult.cards
-                        .filter((card) => card.queue === CardQueue.New)
-                        .map((card) => card.id),
-                );
-
-                if (scopedNewIds.size > 0) {
-                    sessionNewCardIdsRef.current = scopedNewIds;
-                    persistScopedNewCardIds(scopeKey, scopedNewIds);
-                } else {
-                    clearScopedNewCardIds(scopeKey);
-                }
-            }
 
             const nextCard = await buildActiveReviewCard(
                 collection.connection,
@@ -222,12 +211,20 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     answerMillis,
                 });
 
+                const studyDelta = studyDeltasForAnsweredQueue(current.queue);
+                await applyDeckStudyStatsDelta(
+                    connection,
+                    current.did,
+                    now,
+                    studyDelta,
+                    state.config.collectionDayOffset,
+                );
+
                 const queueBuilder = new SchedulerQueueBuilder(connection);
                 const queueResult = await queueBuilder.buildQueue({
                     now,
                     deckId: state.deckId ?? undefined,
                     config: state.config,
-                    allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
                     avoidImmediateLearningRepeatCardId: result.nextCard.id,
                 });
                 const latestCompletion = await loadReviewCompletionState(
@@ -235,6 +232,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     state.deckId,
                     now,
                     state.config.learnAheadSeconds,
+                    state.config.collectionDayOffset,
                 );
 
                 const nextCard = await buildActiveReviewCard(
@@ -285,18 +283,24 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             await restoreCardStatesForUndo(connection, entry);
 
             const now = nowProvider();
+            const answeredQueueDelta = studyDeltasForAnsweredQueue(entry.previousCard.queue);
+            await applyDeckStudyStatsDelta(connection, entry.previousCard.did, now, {
+                newDelta: -answeredQueueDelta.newDelta,
+                reviewDelta: -answeredQueueDelta.reviewDelta,
+            }, state.config.collectionDayOffset);
+
             const queueBuilder = new SchedulerQueueBuilder(connection);
             const queueResult = await queueBuilder.buildQueue({
                 now,
                 deckId: state.deckId ?? undefined,
                 config: state.config,
-                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
             const latestCompletion = await loadReviewCompletionState(
                 connection,
                 state.deckId,
                 now,
                 state.config.learnAheadSeconds,
+                state.config.collectionDayOffset,
             );
 
             const restoredCurrent = await buildActiveReviewCard(
@@ -345,7 +349,6 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 now,
                 deckId: state.deckId ?? undefined,
                 config: state.config,
-                allowedNewCardIds: sessionNewCardIdsRef.current ?? undefined,
             });
 
             const latestCompletion = await loadReviewCompletionState(
@@ -353,6 +356,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                 state.deckId,
                 now,
                 state.config.learnAheadSeconds,
+                state.config.collectionDayOffset,
             );
 
             const nextCard = await buildActiveReviewCard(
@@ -429,6 +433,7 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
                     options.deckId,
                     now,
                     schedulerConfig.learnAheadSeconds,
+                    schedulerConfig.collectionDayOffset,
                 );
                 if (disposed) {
                     return;
@@ -466,9 +471,6 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             stage,
             hasCard: Boolean(currentCard),
             currentCard,
-            answered,
-            remaining: queue.length,
-            total: answered + queue.length,
             counts,
             dueLaterToday: completionState.dueLaterToday,
             nextCardDueInMinutes: completionState.nextCardDueInMinutes,
@@ -487,7 +489,6 @@ export function useReview(options: UseReviewOptions): UseReviewResult {
             collection.loading,
             collection.ready,
             schedulerConfig,
-            counts,
             completionState.dueLaterToday,
             completionState.nextCardDueInMinutes,
             currentCard,
@@ -507,21 +508,27 @@ async function loadReviewCompletionState(
     deckId: number | null,
     now: Date,
     learnAheadSeconds = 0,
+    collectionDayOffset = 0,
 ): Promise<ReviewCompletionState> {
     const nowMs = now.getTime();
     const learnAheadMs = Math.max(0, Math.trunc(learnAheadSeconds * 1000));
-    const nextDayStartMs = fromDayNumber(toDayNumber(now) + 1).getTime();
+    const nextDayStartMs = fromDayNumber(
+        toDayNumber(now, undefined, collectionDayOffset) + 1,
+        undefined,
+        collectionDayOffset,
+    ).getTime();
+    const normalizedDueSql = "CASE WHEN due > 0 AND due < 1000000000000 THEN due * 1000 ELSE due END";
 
     const row = deckId === null
         ? await connection.get<ReviewCompletionRow>(
             `
             SELECT
                 COUNT(*) AS dueLaterToday,
-                MIN(due) AS nextDueAtMs
+                                MIN(${normalizedDueSql}) AS nextDueAtMs
             FROM cards
             WHERE queue = ?
-              AND due > ?
-              AND due < ?
+                            AND ${normalizedDueSql} > ?
+                            AND ${normalizedDueSql} < ?
             `,
             [CardQueue.Learning, nowMs, nextDayStartMs],
         )
@@ -529,12 +536,12 @@ async function loadReviewCompletionState(
             `
             SELECT
                 COUNT(*) AS dueLaterToday,
-                MIN(due) AS nextDueAtMs
+                                MIN(${normalizedDueSql}) AS nextDueAtMs
             FROM cards
             WHERE queue = ?
               AND did = ?
-              AND due > ?
-              AND due < ?
+                            AND ${normalizedDueSql} > ?
+                            AND ${normalizedDueSql} < ?
             `,
             [CardQueue.Learning, deckId, nowMs, nextDayStartMs],
         );
@@ -555,6 +562,27 @@ async function loadReviewCompletionState(
     };
 }
 
+async function maybeUnburyOnDayRollover(
+    connection: CollectionDatabaseConnection,
+    now: Date,
+    collectionDayOffset = 0,
+): Promise<void> {
+    const config = new ConfigRepository(connection);
+    const global = await config.getGlobalConfig();
+    const today = toDayNumber(now, undefined, collectionDayOffset);
+    const lastUnburiedDay = firstNumber(global.lastUnburiedDay, global.last_unburied_day);
+
+    if (lastUnburiedDay !== undefined && lastUnburiedDay >= today && lastUnburiedDay <= today + 7) {
+        return;
+    }
+
+    await unburyCards(connection);
+    await config.updateGlobalConfig({
+        lastUnburiedDay: today,
+        last_unburied_day: today,
+    });
+}
+
 async function loadSchedulerConfig(
     connection: CollectionDatabaseConnection,
     deckId: number | null,
@@ -565,11 +593,25 @@ async function loadSchedulerConfig(
     const global = await config.getGlobalConfig();
     const deck = deckId === null ? null : await decks.getById(deckId);
     const deckConfig = deck?.conf !== undefined ? await config.getDeckConfig(deck.conf) : null;
+    const collectionMeta = await connection.get<{ readonly crt: number }>(
+        "SELECT crt FROM col WHERE id = 1 LIMIT 1",
+    );
+    const collectionDayOffset = resolveCollectionDayOffset(collectionMeta?.crt);
 
     return resolveSchedulerConfig({
         ...schedulerOverridesFromUnknown(global),
         ...schedulerOverridesFromUnknown(deckConfig),
+        ...(collectionDayOffset !== undefined ? { collectionDayOffset } : {}),
     });
+}
+
+function resolveCollectionDayOffset(crt: unknown): number | undefined {
+    const creationSeconds = firstNumber(crt);
+    if (creationSeconds === undefined || creationSeconds <= 0) {
+        return undefined;
+    }
+
+    return toDayNumber(new Date(creationSeconds * 1000));
 }
 
 async function buildActiveReviewCard(
@@ -897,6 +939,27 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
         firstKnown(record.answerAction, record.answer_action),
     );
 
+    const previewAgainSeconds = firstNumber(
+        record.previewAgainSeconds,
+        record.preview_again_seconds,
+        record.previewAgainSecs,
+        record.preview_again_secs,
+    );
+
+    const previewHardSeconds = firstNumber(
+        record.previewHardSeconds,
+        record.preview_hard_seconds,
+        record.previewHardSecs,
+        record.preview_hard_secs,
+    );
+
+    const previewGoodSeconds = firstNumber(
+        record.previewGoodSeconds,
+        record.preview_good_seconds,
+        record.previewGoodSecs,
+        record.preview_good_secs,
+    );
+
     const easyDaysPercentages = normalizeEasyDaysPercentages(
         firstKnown(record.easyDaysPercentages, record.easy_days_percentages),
     );
@@ -917,6 +980,13 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
     return {
         requestRetention: firstNumber(record.requestRetention, record.desiredRetention),
         maximumInterval: firstNumber(record.maximumInterval, record.maxInterval, getNestedNumber(record.rev, "maxIvl")),
+        minimumLapseInterval: firstNumber(
+            record.minimumLapseInterval,
+            record.minimum_lapse_interval,
+            getNestedNumber(record.lapse, "minInt"),
+            getNestedNumber(record.lapse, "minimumInterval"),
+        ),
+        collectionDayOffset: firstNumber(record.collectionDayOffset, record.collection_day_offset),
         ...(leechAction !== undefined ? { leechAction } : {}),
         ...(bury.burySiblings !== undefined ? { burySiblings: bury.burySiblings } : {}),
         ...(bury.buryNew !== undefined ? { buryNew: bury.buryNew } : {}),
@@ -949,6 +1019,9 @@ function schedulerOverridesFromUnknown(config: unknown): Partial<SchedulerConfig
         ...(waitForAudio !== undefined ? { waitForAudio } : {}),
         ...(questionAction !== undefined ? { questionAction } : {}),
         ...(answerAction !== undefined ? { answerAction } : {}),
+        ...(previewAgainSeconds !== undefined ? { previewAgainSeconds } : {}),
+        ...(previewHardSeconds !== undefined ? { previewHardSeconds } : {}),
+        ...(previewGoodSeconds !== undefined ? { previewGoodSeconds } : {}),
         ...(easyDaysPercentages ? { easyDaysPercentages } : {}),
     };
 }
@@ -1506,7 +1579,100 @@ function extractSoundTags(html: string): string[] {
     return tags;
 }
 
-function buildReviewScopeKey(deckId: number | null, today: number): string {
+interface DeckStudyDelta {
+    readonly newDelta: number;
+    readonly reviewDelta: number;
+}
+
+function studyDeltasForAnsweredQueue(queue: CardQueue): DeckStudyDelta {
+    if (queue === CardQueue.New) {
+        return { newDelta: 1, reviewDelta: 0 };
+    }
+
+    if (queue === CardQueue.Review || queue === CardQueue.DayLearning) {
+        return { newDelta: 0, reviewDelta: 1 };
+    }
+
+    return { newDelta: 0, reviewDelta: 0 };
+}
+
+async function applyDeckStudyStatsDelta(
+    connection: CollectionDatabaseConnection,
+    deckId: number,
+    now: Date,
+    delta: DeckStudyDelta,
+    collectionDayOffset = 0,
+): Promise<void> {
+    if (delta.newDelta === 0 && delta.reviewDelta === 0) {
+        return;
+    }
+
+    const decks = new DecksRepository(connection);
+    const allDecks = await decks.list();
+    const deckById = new Map(allDecks.map((deck) => [deck.id, deck]));
+    const deckByName = new Map(allDecks.map((deck) => [deck.name, deck]));
+    const leafDeck = deckById.get(deckId);
+
+    if (!leafDeck) {
+        return;
+    }
+
+    const today = toDayNumber(now, undefined, collectionDayOffset);
+    const lineage = collectDeckLineage(leafDeck, deckByName);
+
+    for (const deck of lineage) {
+        const lastDayStudied = toIntegerOrDefault(deck.lastDayStudied, 0);
+        const resetForDay = lastDayStudied !== today;
+        const nextNewStudied = (resetForDay ? 0 : toIntegerOrDefault(deck.newStudied, 0)) + delta.newDelta;
+        const nextReviewStudied =
+            (resetForDay ? 0 : toIntegerOrDefault(deck.reviewStudied, 0)) + delta.reviewDelta;
+
+        await decks.update(deck.id, {
+            lastDayStudied: today,
+            newStudied: nextNewStudied,
+            reviewStudied: nextReviewStudied,
+        });
+    }
+}
+
+function collectDeckLineage(
+    leafDeck: DeckRecord,
+    deckByName: ReadonlyMap<string, DeckRecord>,
+): DeckRecord[] {
+    const lineage: DeckRecord[] = [];
+    const visited = new Set<number>();
+
+    let currentName: string | null = leafDeck.name;
+    while (currentName !== null) {
+        const deck = deckByName.get(currentName);
+        if (!deck || visited.has(deck.id)) {
+            break;
+        }
+
+        visited.add(deck.id);
+        lineage.push(deck);
+
+        const parentSeparatorIndex = currentName.lastIndexOf("::");
+        currentName = parentSeparatorIndex >= 0 ? currentName.slice(0, parentSeparatorIndex) : null;
+    }
+
+    return lineage;
+}
+
+function toIntegerOrDefault(value: unknown, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return fallback;
+    }
+
+    return Math.trunc(value);
+}
+
+function buildReviewScopeKey(
+    deckId: number | null,
+    today: number,
+    _fingerprint?: ReviewNewScopeFingerprint,
+): string {
+    void _fingerprint;
     return `${deckId === null ? "all" : deckId}:${today}`;
 }
 
@@ -1585,6 +1751,10 @@ export const __reviewNewScope = {
 
 export const __reviewCompletion = {
     loadReviewCompletionState,
+};
+
+export const __reviewRollover = {
+    maybeUnburyOnDayRollover,
 };
 
 export function ratingShortcutToValue(shortcut: string): ReviewRating | null {

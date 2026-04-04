@@ -13,6 +13,7 @@ const HEATMAP_LOOKBACK_DAYS = 365;
 const RETENTION_WINDOW_DAYS = 30;
 const FORECAST_HORIZON_DAYS = 30;
 const DEFAULT_CACHE_TTL_MS = 30_000;
+const REVLOG_ID_TIMESTAMP_ENCODING_THRESHOLD = 10_000_000_000_000;
 
 interface CachedStatsSnapshot {
     readonly createdAt: number;
@@ -171,7 +172,7 @@ interface TodayReviewRow {
 }
 
 interface RevlogHistoryRow {
-    readonly id: number;
+    readonly timestampMs: number;
     readonly ease: number;
 }
 
@@ -373,6 +374,7 @@ export async function computeStatsSnapshot(
     const dayEndMs = dayStartMs + DAY_MS - 1;
     const historyStartDay = todayDay - (HEATMAP_LOOKBACK_DAYS - 1);
     const historyStartMs = historyStartDay * DAY_MS;
+    const revlogTimestampExpr = revlogTimestampSql("r");
 
     const [
         overviewRow,
@@ -395,7 +397,6 @@ export async function computeStatsSnapshot(
                 SUM(CASE WHEN c.queue IN (-2, -3) THEN 1 ELSE 0 END) AS buriedCards,
                 SUM(
                     CASE
-                        WHEN c.queue = 0 THEN 1
                         WHEN c.queue = 1 AND c.due <= ? THEN 1
                         WHEN c.queue IN (2, 3) AND c.due <= ? THEN 1
                         ELSE 0
@@ -431,19 +432,19 @@ export async function computeStatsSnapshot(
                 AVG(r.time) AS averageTimeMs
             FROM revlog r
             INNER JOIN cards c ON c.id = r.cid
-            WHERE r.id BETWEEN ? AND ?
+                        WHERE ${revlogTimestampExpr} BETWEEN ? AND ?
               AND ${cardScope.whereSql}
             `,
             [dayStartMs, dayEndMs, ...cardScope.params],
         ),
         connection.select<RevlogHistoryRow>(
             `
-            SELECT r.id, r.ease
+                        SELECT ${revlogTimestampExpr} AS timestampMs, r.ease
             FROM revlog r
             INNER JOIN cards c ON c.id = r.cid
-            WHERE r.id >= ?
+                        WHERE ${revlogTimestampExpr} >= ?
               AND ${cardScope.whereSql}
-            ORDER BY r.id ASC
+                        ORDER BY timestampMs ASC
             `,
             [historyStartMs, ...cardScope.params],
         ),
@@ -472,6 +473,36 @@ export async function computeStatsSnapshot(
         ),
     ]);
 
+    const configRepository = new ConfigRepository(connection);
+    const deckConfigs = await configRepository.getDeckConfigs();
+
+    const newCardsByDeck = new Map<number, number>();
+    for (const card of cardRows) {
+        if (asFiniteInteger(card.queue) === 0) {
+            const deckId = asFiniteInteger(card.did);
+            newCardsByDeck.set(deckId, (newCardsByDeck.get(deckId) ?? 0) + 1);
+        }
+    }
+
+    let remainingNewToday = 0;
+    for (const [deckId, available] of newCardsByDeck) {
+        if (!scopedDeckIds || scopedDeckIds.includes(deckId)) {
+            const deck = decks.find((d) => d.id === deckId);
+            const confId = String(deck?.conf ?? 1);
+            const conf = deckConfigs[confId];
+            const confRecord =
+                conf && typeof conf === "object" && !Array.isArray(conf)
+                    ? (conf as Record<string, unknown>)
+                    : undefined;
+            const quota = readNumber(confRecord?.newPerDay, readNestedNumber(confRecord?.new, "perDay")) ?? 20;
+
+            const studied = getDeckNewStudiedToday(deck, todayDay);
+            remainingNewToday += Math.min(available, Math.max(0, quota - studied));
+        }
+    }
+
+    const dueTodayLearningAndReview = asFiniteInteger(overviewRow?.dueToday);
+
     const overview: StatsOverview = {
         reviewsToday: asFiniteInteger(reviewsTodayRow?.total),
         correctRateToday: ratio(
@@ -482,7 +513,7 @@ export async function computeStatsSnapshot(
         totalCards: asFiniteInteger(overviewRow?.totalCards),
         totalNotes: asFiniteInteger(totalNotesRow?.total),
         totalReviews: asFiniteInteger(totalReviewsRow?.total),
-        dueToday: asFiniteInteger(overviewRow?.dueToday),
+        dueToday: dueTodayLearningAndReview + remainingNewToday,
         stateCounts: {
             new: asFiniteInteger(overviewRow?.newCards),
             learning: asFiniteInteger(overviewRow?.learningCards),
@@ -544,7 +575,7 @@ function buildReviewHeatmap(
     const perDay = new Map<number, { reviews: number; retained: number }>();
 
     for (const row of historyRows) {
-        const timestamp = asFiniteNumber(row.id);
+        const timestamp = asFiniteNumber(row.timestampMs);
         const day = Math.floor(timestamp / DAY_MS);
 
         const existing = perDay.get(day) ?? { reviews: 0, retained: 0 };
@@ -588,7 +619,7 @@ function buildHourlyDistribution(historyRows: readonly RevlogHistoryRow[]): Hour
     const counts = Array.from({ length: 24 }, () => 0);
 
     for (const row of historyRows) {
-        const timestamp = asFiniteNumber(row.id);
+        const timestamp = asFiniteNumber(row.timestampMs);
         const hour = new Date(timestamp).getHours();
         if (hour >= 0 && hour < 24) {
             counts[hour] += 1;
@@ -758,8 +789,6 @@ function buildDeckForecast(
 
         if (queue === 0) {
             entry.newCards += 1;
-            entry.dueToday += 1;
-            entry.dueNext7Days += 1;
         } else if (queue === 1) {
             entry.learningCards += 1;
 
@@ -1026,4 +1055,24 @@ function buildCacheKey(selectedDeckId: number | null, dayNumber: number): string
         return `day:${dayNumber}:all`;
     }
     return `day:${dayNumber}:deck:${selectedDeckId}`;
+}
+
+function revlogTimestampSql(alias: string): string {
+    return `
+        CASE
+            WHEN ${alias}.id >= ${REVLOG_ID_TIMESTAMP_ENCODING_THRESHOLD}
+                THEN CAST(${alias}.id / 10 AS INTEGER)
+            ELSE ${alias}.id
+        END
+    `;
+}
+
+function getDeckNewStudiedToday(deck: DeckRecord | undefined, todayDay: number): number {
+    if (!deck) return 0;
+    const lastDay = typeof deck.lastDayStudied === "number" && Number.isFinite(deck.lastDayStudied)
+        ? Math.trunc(deck.lastDayStudied)
+        : -1;
+    if (lastDay !== todayDay) return 0;
+    const studied = deck.newStudied;
+    return typeof studied === "number" && Number.isFinite(studied) ? Math.trunc(studied) : 0;
 }

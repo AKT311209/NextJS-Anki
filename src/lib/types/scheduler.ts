@@ -79,6 +79,7 @@ export interface SchedulerConfig {
     readonly easyBonus: number;
     readonly lapseMultiplier: number;
     readonly minimumInterval: number;
+    readonly minimumLapseInterval: number;
     readonly graduatingInterval: number;
     readonly easyInterval: number;
     readonly startingEase: number;
@@ -103,10 +104,14 @@ export interface SchedulerConfig {
     readonly waitForAudio: boolean;
     readonly questionAction: SchedulerQuestionAction;
     readonly answerAction: SchedulerAnswerAction;
+    readonly previewAgainSeconds: number;
+    readonly previewHardSeconds: number;
+    readonly previewGoodSeconds: number;
     readonly easyDaysPercentages: readonly number[];
     readonly newCardsIgnoreReviewLimit: boolean;
     readonly applyAllParentLimits: boolean;
     readonly learnAheadSeconds: number;
+    readonly collectionDayOffset: number;
     readonly limits: SchedulerLimits;
     readonly fsrsWeights?: readonly number[];
 }
@@ -125,6 +130,7 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     easyBonus: 1.3,
     lapseMultiplier: 0.5,
     minimumInterval: 1,
+    minimumLapseInterval: 1,
     graduatingInterval: 1,
     easyInterval: 4,
     startingEase: 2500,
@@ -149,10 +155,14 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     waitForAudio: true,
     questionAction: "show-answer",
     answerAction: "bury-card",
+    previewAgainSeconds: 60,
+    previewHardSeconds: 600,
+    previewGoodSeconds: 0,
     easyDaysPercentages: [1, 1, 1, 1, 1, 1, 1],
     newCardsIgnoreReviewLimit: false,
     applyAllParentLimits: false,
     learnAheadSeconds: 1200,
+    collectionDayOffset: 0,
     limits: {
         newPerDay: 20,
         reviewsPerDay: 200,

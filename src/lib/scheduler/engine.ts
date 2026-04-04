@@ -87,7 +87,7 @@ export class SchedulerEngine {
     private previewWithFsrs(card: Card, config: SchedulerConfig, now: Date): SchedulerPreview {
         const fsrsParameters = buildFsrsParameters(config);
         const scheduler = createFsrsScheduler(fsrsParameters.weights);
-        const input = resolveFsrsInput(card, now);
+        const input = resolveFsrsInput(card, now, config.collectionDayOffset);
 
         try {
             const preview = computeNextFsrsStates(scheduler, {
@@ -98,9 +98,19 @@ export class SchedulerEngine {
             });
 
             const again = this.buildTransitionFromFsrs(card, preview.again, "again", config, now, input.daysElapsed);
-            const hard = this.buildTransitionFromFsrs(card, preview.hard, "hard", config, now, input.daysElapsed);
-            const good = this.buildTransitionFromFsrs(card, preview.good, "good", config, now, input.daysElapsed);
-            const easy = this.buildTransitionFromFsrs(card, preview.easy, "easy", config, now, input.daysElapsed);
+            let hard = this.buildTransitionFromFsrs(card, preview.hard, "hard", config, now, input.daysElapsed);
+            let good = this.buildTransitionFromFsrs(card, preview.good, "good", config, now, input.daysElapsed);
+            let easy = this.buildTransitionFromFsrs(card, preview.easy, "easy", config, now, input.daysElapsed);
+
+            if (card.type === CardType.Review) {
+                ({ hard, good, easy } = enforceFsrsReviewPassingOrder(
+                    card,
+                    { hard, good, easy },
+                    config,
+                    now,
+                    config.collectionDayOffset,
+                ));
+            }
 
             return { again, hard, good, easy };
         } finally {
@@ -123,6 +133,7 @@ export class SchedulerEngine {
         let due = transition.due;
         let nextQueue = transition.nextQueue;
         const nextType = transition.nextType;
+        let persistedIntervalDays = transition.persistedIntervalDays ?? scheduledDays;
 
         // Enforce minimum interval for cards graduating to Review.
         // FSRS can return scheduled_days < 1 (e.g. 0.3),
@@ -131,11 +142,19 @@ export class SchedulerEngine {
         if (nextQueue === CardQueue.Review && scheduledDays < 1) {
             scheduledDays = Math.max(config.minimumInterval, config.graduatingInterval);
             due = new Date(now.getTime() + scheduledDays * DAY_MS);
+            persistedIntervalDays = scheduledDays;
         }
 
         if (nextQueue === CardQueue.DayLearning && scheduledDays < 1) {
             scheduledDays = 1;
-            due = fromDayNumber(toDayNumber(now) + scheduledDays);
+            due = fromDayNumber(
+                toDayNumber(now, undefined, config.collectionDayOffset) + scheduledDays,
+                undefined,
+                config.collectionDayOffset,
+            );
+            if (persistedIntervalDays < 1) {
+                persistedIntervalDays = scheduledDays;
+            }
         }
 
         if (config.enableFuzz && scheduledDays > 1 && nextQueue === CardQueue.Review) {
@@ -147,6 +166,11 @@ export class SchedulerEngine {
             });
             due = new Date(now.getTime() + scheduledDays * DAY_MS);
             nextQueue = CardQueue.Review;
+            persistedIntervalDays = scheduledDays;
+        }
+
+        if (persistedIntervalDays < 0) {
+            persistedIntervalDays = 0;
         }
 
         const fsrsMemory: FsrsMemoryState = {
@@ -154,7 +178,7 @@ export class SchedulerEngine {
             difficulty: item.difficulty,
             lastReview: now.getTime(),
             elapsedDays,
-            scheduledDays,
+            scheduledDays: persistedIntervalDays,
         };
 
         const reps = previousCard.reps + 1;
@@ -169,8 +193,10 @@ export class SchedulerEngine {
             mod: now.getTime(),
             type: nextType,
             queue: nextQueue,
-            due: nextQueue === CardQueue.Learning ? due.getTime() : toDayNumber(due),
-            ivl: scheduledDays,
+            due: nextQueue === CardQueue.Learning
+                ? due.getTime()
+                : toDayNumber(due, undefined, config.collectionDayOffset),
+            ivl: persistedIntervalDays,
             factor: difficultyToEase(item.difficulty, previousCard.factor),
             reps,
             lapses,
@@ -229,7 +255,7 @@ export class SchedulerEngine {
         if (rating === "again") {
             const againDelay = learningStepDelays[0];
             if (againDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, againDelay);
+                const schedule = this.scheduleLearningSeconds(now, againDelay, config);
                 return {
                     nextType: CardType.Learning,
                     nextQueue: schedule.nextQueue,
@@ -252,7 +278,7 @@ export class SchedulerEngine {
         if (rating === "hard") {
             const hardDelay = hardDelaySeconds(learningStepDelays, remainingSteps);
             if (hardDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, hardDelay);
+                const schedule = this.scheduleLearningSeconds(now, hardDelay, config);
                 return {
                     nextType: CardType.Learning,
                     nextQueue: schedule.nextQueue,
@@ -275,7 +301,7 @@ export class SchedulerEngine {
         if (rating === "good") {
             const goodDelay = goodDelaySeconds(learningStepDelays, remainingSteps);
             if (goodDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, goodDelay);
+                const schedule = this.scheduleLearningSeconds(now, goodDelay, config);
                 return {
                     nextType: CardType.Learning,
                     nextQueue: schedule.nextQueue,
@@ -295,6 +321,17 @@ export class SchedulerEngine {
             });
         }
 
+        if (rating === "easy") {
+            const scheduledDays = Math.max(1, Math.round(intervalDays));
+            return {
+                nextType: CardType.Review,
+                nextQueue: CardQueue.Review,
+                due: new Date(now.getTime() + scheduledDays * DAY_MS),
+                scheduledDays,
+                remainingSteps: 0,
+            };
+        }
+
         return this.resolveFsrsDefaultTransition(previousCard, rating, intervalDays, now);
     }
 
@@ -308,17 +345,19 @@ export class SchedulerEngine {
         const relearningStepDelays = toStepDelaysSeconds(config.relearningSteps);
         const failedRemainingSteps = relearningStepDelays.length;
         const remainingSteps = normalizeRemainingSteps(previousCard.left, failedRemainingSteps);
+        const persistedReviewIntervalDays = resolveRelearningReviewIntervalDays(intervalDays, config);
 
         if (rating === "again") {
             const againDelay = relearningStepDelays[0];
             if (againDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, againDelay);
+                const schedule = this.scheduleLearningSeconds(now, againDelay, config);
                 return {
                     nextType: CardType.Relearning,
                     nextQueue: schedule.nextQueue,
                     due: schedule.due,
                     scheduledDays: schedule.scheduledDays,
                     remainingSteps: failedRemainingSteps,
+                    persistedIntervalDays: persistedReviewIntervalDays,
                 };
             }
 
@@ -329,19 +368,21 @@ export class SchedulerEngine {
                 stepCount: relearningStepDelays.length,
                 shortTermType: CardType.Relearning,
                 shortTermRemainingSteps: failedRemainingSteps,
+                persistedIntervalDays: persistedReviewIntervalDays,
             });
         }
 
         if (rating === "hard") {
             const hardDelay = hardDelaySeconds(relearningStepDelays, remainingSteps);
             if (hardDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, hardDelay);
+                const schedule = this.scheduleLearningSeconds(now, hardDelay, config);
                 return {
                     nextType: CardType.Relearning,
                     nextQueue: schedule.nextQueue,
                     due: schedule.due,
                     scheduledDays: schedule.scheduledDays,
                     remainingSteps,
+                    persistedIntervalDays: persistedReviewIntervalDays,
                 };
             }
 
@@ -352,6 +393,7 @@ export class SchedulerEngine {
                 stepCount: relearningStepDelays.length,
                 shortTermType: CardType.Relearning,
                 shortTermRemainingSteps: remainingSteps,
+                persistedIntervalDays: persistedReviewIntervalDays,
             });
         }
 
@@ -359,13 +401,14 @@ export class SchedulerEngine {
             const goodRemainingSteps = remainingStepsForGood(relearningStepDelays, remainingSteps);
             const goodDelay = goodDelaySeconds(relearningStepDelays, remainingSteps);
             if (goodDelay !== undefined) {
-                const schedule = this.scheduleLearningSeconds(now, goodDelay);
+                const schedule = this.scheduleLearningSeconds(now, goodDelay, config);
                 return {
                     nextType: CardType.Relearning,
                     nextQueue: schedule.nextQueue,
                     due: schedule.due,
                     scheduledDays: schedule.scheduledDays,
                     remainingSteps: goodRemainingSteps,
+                    persistedIntervalDays: persistedReviewIntervalDays,
                 };
             }
 
@@ -376,7 +419,19 @@ export class SchedulerEngine {
                 stepCount: relearningStepDelays.length,
                 shortTermType: CardType.Relearning,
                 shortTermRemainingSteps: goodRemainingSteps,
+                persistedIntervalDays: persistedReviewIntervalDays,
             });
+        }
+
+        if (rating === "easy") {
+            const scheduledDays = Math.max(1, Math.round(intervalDays));
+            return {
+                nextType: CardType.Review,
+                nextQueue: CardQueue.Review,
+                due: new Date(now.getTime() + scheduledDays * DAY_MS),
+                scheduledDays,
+                remainingSteps: 0,
+            };
         }
 
         return this.resolveFsrsDefaultTransition(previousCard, rating, intervalDays, now);
@@ -390,15 +445,17 @@ export class SchedulerEngine {
         const relearningStepDelays = toStepDelaysSeconds(config.relearningSteps);
         const failedRemainingSteps = relearningStepDelays.length;
         const againDelay = relearningStepDelays[0];
+        const persistedReviewIntervalDays = resolveRelearningReviewIntervalDays(intervalDays, config);
 
         if (againDelay !== undefined) {
-            const schedule = this.scheduleLearningSeconds(now, againDelay);
+            const schedule = this.scheduleLearningSeconds(now, againDelay, config);
             return {
                 nextType: CardType.Relearning,
                 nextQueue: schedule.nextQueue,
                 due: schedule.due,
                 scheduledDays: schedule.scheduledDays,
                 remainingSteps: failedRemainingSteps,
+                persistedIntervalDays: persistedReviewIntervalDays,
             };
         }
 
@@ -409,6 +466,7 @@ export class SchedulerEngine {
             stepCount: relearningStepDelays.length,
             shortTermType: CardType.Relearning,
             shortTermRemainingSteps: failedRemainingSteps,
+            persistedIntervalDays: persistedReviewIntervalDays,
         });
     }
 
@@ -417,6 +475,7 @@ export class SchedulerEngine {
             const schedule = this.scheduleLearningSeconds(
                 options.now,
                 Math.max(0, Math.trunc(options.intervalDays * DAY_SECONDS)),
+                options.config,
             );
 
             return {
@@ -425,16 +484,21 @@ export class SchedulerEngine {
                 due: schedule.due,
                 scheduledDays: schedule.scheduledDays,
                 remainingSteps: options.shortTermRemainingSteps,
+                persistedIntervalDays: options.persistedIntervalDays,
             };
         }
 
-        const scheduledDays = Math.max(0, Math.trunc(options.intervalDays));
+        const scheduledDays = Math.max(
+            1,
+            Math.round(options.persistedIntervalDays ?? options.intervalDays),
+        );
         return {
             nextType: CardType.Review,
             nextQueue: CardQueue.Review,
             due: new Date(options.now.getTime() + scheduledDays * DAY_MS),
             scheduledDays,
             remainingSteps: 0,
+            persistedIntervalDays: scheduledDays,
         };
     }
 
@@ -457,17 +521,21 @@ export class SchedulerEngine {
         };
     }
 
-    private scheduleLearningSeconds(now: Date, intervalSeconds: number): LearningSchedule {
+    private scheduleLearningSeconds(
+        now: Date,
+        intervalSeconds: number,
+        config: SchedulerConfig,
+    ): LearningSchedule {
         const safeSeconds = Math.max(0, Math.trunc(intervalSeconds));
-        const secondsUntilRollover = secondsUntilNextRollover(now);
+        const secondsUntilRollover = secondsUntilNextRollover(now, config.collectionDayOffset);
 
         if (safeSeconds >= secondsUntilRollover) {
             const days = Math.floor((safeSeconds - secondsUntilRollover) / DAY_SECONDS) + 1;
-            const dueDay = toDayNumber(now) + days;
+            const dueDay = toDayNumber(now, undefined, config.collectionDayOffset) + days;
 
             return {
                 nextQueue: CardQueue.DayLearning,
-                due: fromDayNumber(dueDay),
+                due: fromDayNumber(dueDay, undefined, config.collectionDayOffset),
                 scheduledDays: days,
             };
         }
@@ -508,7 +576,13 @@ export class SchedulerEngine {
             easeFactor = Math.max(1300, easeFactor - 200);
             const relearning = previousCard.type === CardType.Review || previousCard.type === CardType.Relearning;
             const minutes = firstStepMinutes(config, relearning);
-            scheduledDays = Math.max(0, Math.floor(minutes / (60 * 24)));
+            scheduledDays = relearning
+                ? clamp(
+                    Math.round(Math.max(1, previousInterval) * config.lapseMultiplier),
+                    config.minimumLapseInterval,
+                    config.maximumInterval,
+                )
+                : Math.max(0, Math.floor(minutes / (60 * 24)));
             due = new Date(now.getTime() + minutes * 60 * 1000);
             nextType = relearning ? CardType.Relearning : CardType.Learning;
             nextQueue = minutes >= 24 * 60 ? CardQueue.DayLearning : CardQueue.Learning;
@@ -560,7 +634,9 @@ export class SchedulerEngine {
             mod: now.getTime(),
             type: nextType,
             queue: nextQueue,
-            due: nextQueue === CardQueue.Learning ? due.getTime() : toDayNumber(due),
+            due: nextQueue === CardQueue.Learning
+                ? due.getTime()
+                : toDayNumber(due, undefined, config.collectionDayOffset),
             ivl: scheduledDays,
             factor: easeFactor,
             reps,
@@ -610,6 +686,7 @@ interface ResolvedFsrsTransition {
     readonly due: Date;
     readonly scheduledDays: number;
     readonly remainingSteps: number;
+    readonly persistedIntervalDays?: number;
 }
 
 interface FsrsStepFallbackOptions {
@@ -619,6 +696,7 @@ interface FsrsStepFallbackOptions {
     readonly stepCount: number;
     readonly shortTermType: CardType;
     readonly shortTermRemainingSteps: number;
+    readonly persistedIntervalDays?: number;
 }
 
 interface LearningSchedule {
@@ -627,12 +705,16 @@ interface LearningSchedule {
     readonly scheduledDays: number;
 }
 
-function resolveFsrsInput(card: Card, now: Date): FsrsInputState {
+function resolveFsrsInput(
+    card: Card,
+    now: Date,
+    collectionDayOffset = 0,
+): FsrsInputState {
     const memory = extractFsrsMemory(card);
 
     if (memory) {
         const lastReview = new Date(memory.lastReview);
-        const elapsedFromMemory = elapsedSchedulerDays(lastReview, now);
+        const elapsedFromMemory = elapsedSchedulerDays(lastReview, now, undefined, collectionDayOffset);
 
         return {
             stability: memory.stability,
@@ -647,7 +729,7 @@ function resolveFsrsInput(card: Card, now: Date): FsrsInputState {
         stability: card.ivl > 0 ? Math.max(0.1, card.ivl) : undefined,
         difficulty: card.ivl > 0 ? easeToDifficulty(card.factor) : undefined,
         daysElapsed: inferredLastReview
-            ? elapsedSchedulerDays(inferredLastReview, now)
+            ? elapsedSchedulerDays(inferredLastReview, now, undefined, collectionDayOffset)
             : Math.max(0, Math.trunc(card.ivl)),
     };
 }
@@ -780,6 +862,14 @@ function remainingStepsForGood(stepDelays: readonly number[], remainingSteps: nu
     return Math.max(0, stepDelays.length - (index + 1));
 }
 
+function resolveRelearningReviewIntervalDays(intervalDays: number, config: SchedulerConfig): number {
+    return clamp(
+        Math.max(config.minimumLapseInterval, Math.round(intervalDays)),
+        1,
+        config.maximumInterval,
+    );
+}
+
 function maybeRoundInDays(seconds: number): number {
     if (seconds > DAY_SECONDS) {
         return Math.max(1, Math.round(seconds / DAY_SECONDS)) * DAY_SECONDS;
@@ -793,6 +883,10 @@ function shouldUseFsrsShortTerm(config: SchedulerConfig, intervalDays: number, h
         return false;
     }
 
+    if (!fsrsSupportsShortTermByParameters(config)) {
+        return false;
+    }
+
     if (intervalDays >= 0.5) {
         return false;
     }
@@ -800,8 +894,128 @@ function shouldUseFsrsShortTerm(config: SchedulerConfig, intervalDays: number, h
     return config.fsrsShortTermWithSteps || !hasConfiguredSteps;
 }
 
-function secondsUntilNextRollover(now: Date): number {
-    const nextRollover = fromDayNumber(toDayNumber(now) + 1);
+function fsrsSupportsShortTermByParameters(config: SchedulerConfig): boolean {
+    const weights = buildFsrsParameters(config).weights;
+    if (weights.length < 19) {
+        return false;
+    }
+
+    return weights[17] > 0 && weights[18] > 0;
+}
+
+function enforceFsrsReviewPassingOrder(
+    previousCard: Card,
+    transitions: {
+        hard: SchedulerTransition;
+        good: SchedulerTransition;
+        easy: SchedulerTransition;
+    },
+    config: SchedulerConfig,
+    now: Date,
+    collectionDayOffset = 0,
+): {
+    hard: SchedulerTransition;
+    good: SchedulerTransition;
+    easy: SchedulerTransition;
+} {
+    const previousInterval = Math.max(0, Math.trunc(previousCard.ivl));
+    const greaterThanLast = (interval: number): number => {
+        if (interval > previousInterval) {
+            return previousInterval + 1;
+        }
+
+        return 0;
+    };
+
+    const hardMinimum = Math.max(1, greaterThanLast(transitions.hard.scheduledDays));
+    const hard = applyReviewIntervalMinimum(
+        transitions.hard,
+        hardMinimum,
+        config.maximumInterval,
+        now,
+        collectionDayOffset,
+    );
+
+    const goodMinimum = Math.max(
+        greaterThanLast(transitions.good.scheduledDays),
+        (hard.nextCard.queue === CardQueue.Review ? hard.scheduledDays + 1 : 1),
+    );
+    const good = applyReviewIntervalMinimum(
+        transitions.good,
+        goodMinimum,
+        config.maximumInterval,
+        now,
+        collectionDayOffset,
+    );
+
+    const easyMinimum = Math.max(
+        greaterThanLast(transitions.easy.scheduledDays),
+        (good.nextCard.queue === CardQueue.Review ? good.scheduledDays + 1 : 1),
+    );
+    const easy = applyReviewIntervalMinimum(
+        transitions.easy,
+        easyMinimum,
+        config.maximumInterval,
+        now,
+        collectionDayOffset,
+    );
+
+    return { hard, good, easy };
+}
+
+function applyReviewIntervalMinimum(
+    transition: SchedulerTransition,
+    minimum: number,
+    maximum: number,
+    now: Date,
+    collectionDayOffset = 0,
+): SchedulerTransition {
+    if (transition.nextCard.queue !== CardQueue.Review) {
+        return transition;
+    }
+
+    const clampedMaximum = Math.max(1, Math.trunc(maximum));
+    const targetDays = clamp(Math.max(1, minimum, Math.trunc(transition.scheduledDays)), 1, clampedMaximum);
+
+    if (targetDays === transition.scheduledDays) {
+        return transition;
+    }
+
+    const due = new Date(now.getTime() + targetDays * DAY_MS);
+    const nextCard = {
+        ...transition.nextCard,
+        due: toDayNumber(due, undefined, collectionDayOffset),
+        ivl: targetDays,
+        data: transition.fsrs
+            ? mergeCardData(transition.nextCard, {
+                fsrs: {
+                    ...transition.fsrs,
+                    scheduledDays: targetDays,
+                },
+            })
+            : transition.nextCard.data,
+    };
+
+    return {
+        ...transition,
+        due,
+        scheduledDays: targetDays,
+        fsrs: transition.fsrs
+            ? {
+                ...transition.fsrs,
+                scheduledDays: targetDays,
+            }
+            : transition.fsrs,
+        nextCard,
+    };
+}
+
+function secondsUntilNextRollover(now: Date, collectionDayOffset = 0): number {
+    const nextRollover = fromDayNumber(
+        toDayNumber(now, undefined, collectionDayOffset) + 1,
+        undefined,
+        collectionDayOffset,
+    );
     return Math.max(0, Math.trunc((nextRollover.getTime() - now.getTime()) / 1000));
 }
 

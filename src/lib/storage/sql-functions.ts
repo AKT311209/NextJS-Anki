@@ -1,7 +1,12 @@
 import type { Database as SqlJsDatabase, SqlValue } from "sql.js";
 
 const FIELD_SEPARATOR = "\x1f";
-const DAY_IN_MS = 86_400_000;
+const DAY_IN_SECONDS = 86_400;
+const REGISTERED_DATABASES = new WeakSet<SqlJsDatabase>();
+
+export interface RegisterSqlFunctionsOptions {
+    readonly force?: boolean;
+}
 
 export enum ProcessTextFlags {
     CaseFold = 1 << 0,
@@ -9,7 +14,14 @@ export enum ProcessTextFlags {
     NormalizeWhitespace = 1 << 2,
 }
 
-export function registerSqlFunctions(database: SqlJsDatabase): void {
+export function registerSqlFunctions(
+    database: SqlJsDatabase,
+    options: RegisterSqlFunctionsOptions = {},
+): void {
+    if (!options.force && REGISTERED_DATABASES.has(database)) {
+        return;
+    }
+
     database.create_function("field_at_index", (fields: SqlValue, ordinal: SqlValue) =>
         fieldAtIndex(fields, ordinal),
     );
@@ -26,9 +38,29 @@ export function registerSqlFunctions(database: SqlJsDatabase): void {
 
     database.create_function(
         "extract_fsrs_retrievability",
-        (data: SqlValue, decay: SqlValue, now: SqlValue) =>
-            extractFsrsRetrievability(data, decay, now),
+        (
+            data: SqlValue,
+            due: SqlValue,
+            ivl: SqlValue,
+            today: SqlValue,
+            nextDayAtMs: SqlValue,
+            now: SqlValue,
+        ) => extractFsrsRetrievability(data, due, ivl, today, nextDayAtMs, now),
     );
+
+    database.create_function(
+        "extract_fsrs_relative_retrievability",
+        (
+            data: SqlValue,
+            due: SqlValue,
+            ivl: SqlValue,
+            today: SqlValue,
+            _nextDayAtMs: SqlValue,
+            now: SqlValue,
+        ) => extractFsrsRelativeRetrievability(data, due, ivl, today, now),
+    );
+
+    REGISTERED_DATABASES.add(database);
 }
 
 function fieldAtIndex(fields: SqlValue, ordinal: SqlValue): string {
@@ -86,7 +118,14 @@ function extractFsrsVariable(data: SqlValue, key: SqlValue): number | string | n
     return null;
 }
 
-function extractFsrsRetrievability(data: SqlValue, decay: SqlValue, now: SqlValue): number | null {
+function extractFsrsRetrievability(
+    data: SqlValue,
+    due: SqlValue,
+    ivl: SqlValue,
+    today: SqlValue,
+    _nextDayAtMs: SqlValue,
+    now: SqlValue,
+): number | null {
     if (typeof data !== "string") {
         return null;
     }
@@ -96,30 +135,129 @@ function extractFsrsRetrievability(data: SqlValue, decay: SqlValue, now: SqlValu
         return null;
     }
 
-    const decayNumber = toFiniteNumber(decay);
+    const dueNumber = toFiniteNumber(due);
+    const interval = toFiniteNumber(ivl);
+    const todayNumber = toFiniteNumber(today);
     const nowNumber = toFiniteNumber(now);
-    if (decayNumber === null || nowNumber === null || decayNumber === 0) {
+    if (dueNumber === null || interval === null || todayNumber === null || nowNumber === null) {
         return null;
     }
 
     const stabilityValue = resolveFsrsField(parsed, "s") ?? resolveFsrsField(parsed, "stability");
+    const stability = toFiniteNumber(stabilityValue);
+    if (stability === null || stability <= 0) {
+        return null;
+    }
+
+    const decayValue = toFiniteNumber(resolveFsrsField(parsed, "decay"));
+    const decay = decayValue ?? -0.5;
+
+    const secondsElapsed = resolveFsrsSecondsElapsed(parsed, dueNumber, interval, todayNumber, nowNumber);
+    if (secondsElapsed === null) {
+        return null;
+    }
+
+    return computeFsrsRetrievability(stability, secondsElapsed / DAY_IN_SECONDS, decay);
+}
+
+function extractFsrsRelativeRetrievability(
+    data: SqlValue,
+    due: SqlValue,
+    ivl: SqlValue,
+    today: SqlValue,
+    now: SqlValue,
+): number | null {
+    if (typeof data !== "string") {
+        return null;
+    }
+
+    const parsed = parseJsonRecord(data);
+    if (!parsed) {
+        return null;
+    }
+
+    const dueNumber = toFiniteNumber(due);
+    const interval = toFiniteNumber(ivl);
+    const todayNumber = toFiniteNumber(today);
+    const nowMs = toFiniteNumber(now);
+
+    if (dueNumber === null || interval === null || todayNumber === null || nowMs === null) {
+        return null;
+    }
+
+    const secondsElapsed = resolveFsrsSecondsElapsed(parsed, dueNumber, interval, todayNumber, nowMs);
+    if (secondsElapsed === null) {
+        return null;
+    }
+
+    const stabilityValue = resolveFsrsField(parsed, "s") ?? resolveFsrsField(parsed, "stability");
+    const stability = toFiniteNumber(stabilityValue);
+
+    if (stability !== null && stability > 0) {
+        const desiredRetentionRaw = toFiniteNumber(resolveFsrsField(parsed, "dr"));
+        const desiredRetention = Math.max(0.0001, desiredRetentionRaw ?? 0.9);
+        const decay = toFiniteNumber(resolveFsrsField(parsed, "decay")) ?? -0.5;
+        const currentRetrievability = Math.max(
+            0.0001,
+            computeFsrsRetrievability(stability, secondsElapsed / DAY_IN_SECONDS, decay) ?? 0.0001,
+        );
+
+        return -(
+            (Math.pow(currentRetrievability, -1 / decay) - 1) /
+            (Math.pow(desiredRetention, -1 / decay) - 1)
+        );
+    }
+
+    const daysElapsed = secondsElapsed / DAY_IN_SECONDS;
+    return -((daysElapsed + 0.001) / Math.max(1, interval));
+}
+
+function resolveFsrsSecondsElapsed(
+    parsed: Record<string, unknown>,
+    due: number,
+    interval: number,
+    today: number,
+    now: number,
+): number | null {
+    const nowMs = normalizeEpochToMilliseconds(now);
     const lastReviewValue =
         resolveFsrsField(parsed, "last_review") ??
         resolveFsrsField(parsed, "lastReview") ??
         resolveFsrsField(parsed, "last_review_time");
-
-    const stability = toFiniteNumber(stabilityValue);
     const lastReview = toFiniteNumber(lastReviewValue);
-    if (stability === null || stability <= 0 || lastReview === null) {
+
+    if (lastReview !== null) {
+        const lastReviewMs = normalizeEpochToMilliseconds(lastReview);
+        return Math.max(0, (nowMs - lastReviewMs) / 1000);
+    }
+
+    if (isIntradayDue(due)) {
+        const dueMs = normalizeEpochToMilliseconds(due);
+        const lastReviewMs = dueMs - Math.max(0, interval) * 1000;
+        return Math.max(0, (nowMs - lastReviewMs) / 1000);
+    }
+
+    const reviewDay = due - interval;
+    const daysElapsed = Math.max(0, today - reviewDay);
+    return daysElapsed * DAY_IN_SECONDS;
+}
+
+function isIntradayDue(due: number): boolean {
+    return due > 365_000;
+}
+
+function computeFsrsRetrievability(stability: number, elapsedDays: number, decay: number): number | null {
+    if (!Number.isFinite(stability) || !Number.isFinite(elapsedDays) || !Number.isFinite(decay) || decay === 0) {
         return null;
     }
 
-    const normalizedNow = normalizeEpochToMilliseconds(nowNumber);
-    const normalizedLastReview = normalizeEpochToMilliseconds(lastReview);
-    const elapsedDays = Math.max(0, (normalizedNow - normalizedLastReview) / DAY_IN_MS);
+    const factor = Math.pow(0.9, 1 / decay) - 1;
+    const base = 1 + factor * (elapsedDays / stability);
+    if (!Number.isFinite(base) || base <= 0) {
+        return null;
+    }
 
-    const factor = Math.pow(0.9, 1 / decayNumber) - 1;
-    const retrievability = Math.pow(1 + factor * (elapsedDays / stability), decayNumber);
+    const retrievability = Math.pow(base, decay);
     return clamp(retrievability, 0, 1);
 }
 

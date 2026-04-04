@@ -61,7 +61,7 @@ describe("Phase 1 storage layer", () => {
                 fnvhash('1|2|3') AS hash,
                 process_text('<b>Hello</b>   WORLD', 7) AS processed,
                 extract_fsrs_variable('{"s": 12.5, "last_review": 0}', 's') AS stability,
-                extract_fsrs_retrievability('{"s": 10, "last_review": 0}', -0.5, 86400) AS retr
+                extract_fsrs_retrievability('{"s": 10, "last_review": 1000}', 12, 5, 12, 0, 1000) AS retr
             `,
         );
 
@@ -71,6 +71,86 @@ describe("Phase 1 storage layer", () => {
         expect(row?.stability).toBe(12.5);
         expect((row?.retr ?? 0) <= 1).toBe(true);
         expect((row?.retr ?? 0) >= 0).toBe(true);
+    });
+
+    it("keeps custom SQL functions available after concurrent initialize calls", async () => {
+        const concurrentManager = new CollectionDatabaseManager({
+            persistenceMode: "memory",
+            preferOpfs: false,
+            autoSaveDebounceMs: 1,
+        });
+
+        await Promise.all([
+            concurrentManager.initialize(),
+            concurrentManager.initialize(),
+            concurrentManager.initialize(),
+        ]);
+
+        const concurrentConnection = await concurrentManager.getConnection("concurrent");
+        const row = await concurrentConnection.get<{ hash: number }>(
+            "SELECT fnvhash('race-check') AS hash",
+        );
+
+        expect(typeof row?.hash).toBe("number");
+
+        await concurrentManager.close();
+    });
+
+    it("re-registers SQL functions when the active database handle changes", async () => {
+        const internals = manager as unknown as {
+            sqlJs: { Database: new (data?: Uint8Array) => unknown } | null;
+            database: unknown;
+            initialized: boolean;
+        };
+
+        expect(internals.sqlJs).not.toBeNull();
+
+        if (internals.sqlJs) {
+            internals.database = new internals.sqlJs.Database();
+            internals.initialized = true;
+        }
+
+        const row = await connection.get<{ hash: number }>(
+            "SELECT fnvhash('re-register-check') AS hash",
+        );
+
+        expect(typeof row?.hash).toBe("number");
+    });
+
+    it("retries query after transient missing-function prepare errors", async () => {
+        const internals = manager as unknown as {
+            database: {
+                prepare: (sql: string, params?: unknown) => unknown;
+            } | null;
+        };
+
+        expect(internals.database).not.toBeNull();
+        if (!internals.database) {
+            return;
+        }
+
+        const database = internals.database;
+        const originalPrepare = database.prepare.bind(database);
+        let injectedFailure = true;
+
+        database.prepare = ((sql: string, params?: unknown) => {
+            if (injectedFailure) {
+                injectedFailure = false;
+                throw new Error("no such function: fnvhash");
+            }
+
+            return originalPrepare(sql, params);
+        }) as typeof database.prepare;
+
+        try {
+            const row = await connection.get<{ hash: number }>(
+                "SELECT fnvhash('retry-check') AS hash",
+            );
+
+            expect(typeof row?.hash).toBe("number");
+        } finally {
+            database.prepare = originalPrepare;
+        }
     });
 
     it("supports repository CRUD and scheduling queries", async () => {

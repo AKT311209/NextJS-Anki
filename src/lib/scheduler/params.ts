@@ -52,6 +52,10 @@ export function resolveSchedulerConfig(overrides: Partial<SchedulerConfig> = {})
         easyBonus: clamp(overrides.easyBonus ?? base.easyBonus, 1, 10),
         lapseMultiplier: clamp(overrides.lapseMultiplier ?? base.lapseMultiplier, 0.01, 1),
         minimumInterval: Math.max(1, Math.trunc(overrides.minimumInterval ?? base.minimumInterval)),
+        minimumLapseInterval: Math.max(
+            1,
+            Math.trunc(overrides.minimumLapseInterval ?? base.minimumLapseInterval),
+        ),
         graduatingInterval: Math.max(1, Math.trunc(overrides.graduatingInterval ?? base.graduatingInterval)),
         easyInterval: Math.max(1, Math.trunc(overrides.easyInterval ?? base.easyInterval)),
         startingEase: Math.max(1300, Math.trunc(overrides.startingEase ?? base.startingEase)),
@@ -79,10 +83,14 @@ export function resolveSchedulerConfig(overrides: Partial<SchedulerConfig> = {})
         waitForAudio: overrides.waitForAudio ?? base.waitForAudio,
         questionAction: normalizeQuestionAction(overrides.questionAction ?? base.questionAction),
         answerAction: normalizeAnswerAction(overrides.answerAction ?? base.answerAction),
+        previewAgainSeconds: Math.max(0, Math.trunc(overrides.previewAgainSeconds ?? base.previewAgainSeconds)),
+        previewHardSeconds: Math.max(0, Math.trunc(overrides.previewHardSeconds ?? base.previewHardSeconds)),
+        previewGoodSeconds: Math.max(0, Math.trunc(overrides.previewGoodSeconds ?? base.previewGoodSeconds)),
         easyDaysPercentages: normalizeEasyDaysPercentages(overrides.easyDaysPercentages),
         newCardsIgnoreReviewLimit: overrides.newCardsIgnoreReviewLimit ?? base.newCardsIgnoreReviewLimit,
         applyAllParentLimits: overrides.applyAllParentLimits ?? base.applyAllParentLimits,
         learnAheadSeconds: Math.max(0, Math.trunc(overrides.learnAheadSeconds ?? base.learnAheadSeconds)),
+        collectionDayOffset: Math.trunc(overrides.collectionDayOffset ?? base.collectionDayOffset),
         limits: {
             newPerDay: Math.max(0, Math.trunc(mergedLimits.newPerDay)),
             reviewsPerDay: Math.max(0, Math.trunc(mergedLimits.reviewsPerDay)),
@@ -342,6 +350,25 @@ export function schedulerOverridesFromUnknown(config: unknown): Partial<Schedule
         firstKnown(record.answerAction, record.answer_action),
     );
 
+    const previewAgainSeconds = firstNumber(
+        record.previewAgainSeconds,
+        record.preview_again_seconds,
+        record.previewAgainSecs,
+        record.preview_again_secs,
+    );
+    const previewHardSeconds = firstNumber(
+        record.previewHardSeconds,
+        record.preview_hard_seconds,
+        record.previewHardSecs,
+        record.preview_hard_secs,
+    );
+    const previewGoodSeconds = firstNumber(
+        record.previewGoodSeconds,
+        record.preview_good_seconds,
+        record.previewGoodSecs,
+        record.preview_good_secs,
+    );
+
     const easyDaysPercentages = normalizeEasyDaysPercentagesUnknown(
         firstKnown(record.easyDaysPercentages, record.easy_days_percentages),
     );
@@ -378,6 +405,12 @@ export function schedulerOverridesFromUnknown(config: unknown): Partial<Schedule
         requestRetention: firstNumber(record.requestRetention, record.desiredRetention),
         maximumInterval: firstNumber(record.maximumInterval, record.maxInterval, getNestedNumber(record.rev, "maxIvl")),
         enableFuzz: firstBoolean(record.enableFuzz),
+        minimumLapseInterval: firstNumber(
+            record.minimumLapseInterval,
+            record.minimum_lapse_interval,
+            getNestedNumber(record.lapse, "minInt"),
+            getNestedNumber(record.lapse, "minimumInterval"),
+        ),
         leechThreshold: firstNumber(record.leechThreshold, record.leechFails, getNestedNumber(record.lapse, "leechFails")),
         leechAction: normalizeLeechActionUnknown(
             firstKnown(record.leechAction, getNestedValue(record.lapse, "leechAction")),
@@ -399,12 +432,16 @@ export function schedulerOverridesFromUnknown(config: unknown): Partial<Schedule
         ...(waitForAudio !== undefined ? { waitForAudio } : {}),
         ...(questionAction !== undefined ? { questionAction } : {}),
         ...(answerAction !== undefined ? { answerAction } : {}),
+        ...(previewAgainSeconds !== undefined ? { previewAgainSeconds } : {}),
+        ...(previewHardSeconds !== undefined ? { previewHardSeconds } : {}),
+        ...(previewGoodSeconds !== undefined ? { previewGoodSeconds } : {}),
         ...(easyDaysPercentages ? { easyDaysPercentages } : {}),
         newCardsIgnoreReviewLimit: firstBoolean(
             record.newCardsIgnoreReviewLimit,
             record.new_cards_ignore_review_limit,
         ),
         applyAllParentLimits: firstBoolean(record.applyAllParentLimits, record.apply_all_parent_limits),
+        collectionDayOffset: firstNumber(record.collectionDayOffset, record.collection_day_offset),
         fsrsShortTermWithSteps,
         fsrsWeights,
         limits: {

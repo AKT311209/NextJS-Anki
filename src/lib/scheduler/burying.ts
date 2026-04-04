@@ -77,13 +77,21 @@ export async function unburyCards(
     connection: CollectionDatabaseConnection,
     deckId?: number,
 ): Promise<number> {
+    const intradayThreshold = 1_000_000_000;
+
     const sql = `
 		UPDATE cards
 		SET queue = CASE
 			WHEN type = ${CardType.New} THEN ${CardQueue.New}
-			WHEN type = ${CardType.Learning} THEN ${CardQueue.Learning}
+            WHEN type = ${CardType.Learning} THEN CASE
+                WHEN due > ${intradayThreshold} THEN ${CardQueue.Learning}
+                ELSE ${CardQueue.DayLearning}
+            END
 			WHEN type = ${CardType.Review} THEN ${CardQueue.Review}
-			WHEN type = ${CardType.Relearning} THEN ${CardQueue.Learning}
+            WHEN type = ${CardType.Relearning} THEN CASE
+                WHEN due > ${intradayThreshold} THEN ${CardQueue.Learning}
+                ELSE ${CardQueue.DayLearning}
+            END
 			ELSE queue
 		END,
 		mod = ?

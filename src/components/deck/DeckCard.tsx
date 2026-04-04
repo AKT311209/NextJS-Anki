@@ -65,14 +65,6 @@ export function DeckCard({
                 </Link>
             </div>
 
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-                <Stat label="Due" value={node.deck.counts.dueToday} />
-                <Stat label="New" value={node.deck.counts.newCount} />
-                <Stat label="Learn" value={node.deck.counts.learningCount} />
-                <Stat label="Review" value={node.deck.counts.reviewCount} />
-                <Stat label="Total" value={node.deck.counts.total} />
-            </div>
-
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 <button
                     type="button"
@@ -104,14 +96,5 @@ export function DeckCard({
                 </button>
             </div>
         </article>
-    );
-}
-
-function Stat({ label, value }: { readonly label: string; readonly value: number }) {
-    return (
-        <div className="rounded-md border border-slate-800 bg-slate-950/30 px-2 py-1.5 text-center">
-            <div className="text-[10px] uppercase tracking-wide text-slate-400">{label}</div>
-            <div className="text-sm font-semibold text-slate-100">{value}</div>
-        </div>
     );
 }

@@ -229,6 +229,11 @@ export default function ReviewPage() {
                 return;
             }
 
+            if (typeof document !== "undefined" && !document.hasFocus()) {
+                actionTriggered = true;
+                return;
+            }
+
             actionTriggered = true;
 
             if (review.stage === "question") {
@@ -314,7 +319,7 @@ export default function ReviewPage() {
                 </p>
             </header>
 
-            <ReviewProgress answered={review.answered} remaining={review.remaining} counts={review.counts} />
+            <ReviewProgress counts={review.counts} />
 
             {review.loading ? (
                 <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-300">

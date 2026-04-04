@@ -25,6 +25,49 @@ describe("Phase 4 review new-card scope", () => {
         expect(__reviewNewScope.loadScopedNewCardIds(tomorrowScope)).toBeNull();
     });
 
+    it("keeps scope stable when ordering fingerprint changes", () => {
+        const baselineScope = __reviewNewScope.buildReviewScopeKey(7, 20_180, {
+            newCardGatherPriority: "deck",
+            newCardSortOrder: "template",
+            newReviewMix: "mix-with-reviews",
+            interdayLearningMix: "mix-with-reviews",
+            reviewSortOrder: "due",
+            newPerDay: 20,
+            reviewsPerDay: 200,
+            newCardsIgnoreReviewLimit: false,
+        });
+
+        const changedGatherScope = __reviewNewScope.buildReviewScopeKey(7, 20_180, {
+            newCardGatherPriority: "lowest-position",
+            newCardSortOrder: "template",
+            newReviewMix: "mix-with-reviews",
+            interdayLearningMix: "mix-with-reviews",
+            reviewSortOrder: "due",
+            newPerDay: 20,
+            reviewsPerDay: 200,
+            newCardsIgnoreReviewLimit: false,
+        });
+
+        const changedSortScope = __reviewNewScope.buildReviewScopeKey(7, 20_180, {
+            newCardGatherPriority: "deck",
+            newCardSortOrder: "random-card",
+            newReviewMix: "mix-with-reviews",
+            interdayLearningMix: "mix-with-reviews",
+            reviewSortOrder: "due",
+            newPerDay: 20,
+            reviewsPerDay: 200,
+            newCardsIgnoreReviewLimit: false,
+        });
+
+        __reviewNewScope.persistScopedNewCardIds(baselineScope, new Set([4001, 4002]));
+
+        expect(changedGatherScope).toBe(baselineScope);
+        expect(changedSortScope).toBe(baselineScope);
+        expect(__reviewNewScope.loadScopedNewCardIds(baselineScope)).toEqual(new Set([4001, 4002]));
+        expect(__reviewNewScope.loadScopedNewCardIds(changedGatherScope)).toEqual(new Set([4001, 4002]));
+        expect(__reviewNewScope.loadScopedNewCardIds(changedSortScope)).toEqual(new Set([4001, 4002]));
+    });
+
     it("drops malformed persisted scope payloads", () => {
         const scopeKey = __reviewNewScope.buildReviewScopeKey(99, 20_180);
         const storageKey = __reviewNewScope.scopedNewCardsStorageKey(scopeKey);

@@ -61,11 +61,9 @@ describe("Phase 4 review UI", () => {
         expect(screen.queryByRole("button", { name: /Show answer/i })).toBeNull();
     });
 
-    it("renders progress percentage and queue breakdown", () => {
+    it("renders queue breakdown", () => {
         render(
             <ReviewProgress
-                answered={3}
-                remaining={2}
                 counts={{
                     learning: 1,
                     review: 1,
@@ -74,7 +72,6 @@ describe("Phase 4 review UI", () => {
             />,
         );
 
-        expect(screen.getByText(/3 \/ 5 answered/i)).toBeInTheDocument();
         expect(screen.getByText("Learning")).toBeInTheDocument();
         expect(screen.getByText("Review")).toBeInTheDocument();
     });

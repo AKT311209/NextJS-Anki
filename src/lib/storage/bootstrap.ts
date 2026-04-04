@@ -21,6 +21,8 @@ const DEFAULT_DECK_CONFIG: Record<string, unknown> = {
     relearningSteps: ["10m"],
     requestRetention: 0.9,
     maximumInterval: 36500,
+    minimumLapseInterval: 1,
+    minimum_lapse_interval: 1,
     burySiblings: false,
     buryNew: false,
     buryReviews: false,
@@ -76,6 +78,7 @@ const DEFAULT_DECK_CONFIG: Record<string, unknown> = {
     },
     lapse: {
         delays: [10],
+        minInt: 1,
         leechAction: 1,
     },
 };

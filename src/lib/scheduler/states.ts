@@ -27,13 +27,21 @@ export interface StateContext {
     readonly now: Date;
 }
 
-export function toDayNumber(value: Date, rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR): number {
+export function toDayNumber(
+    value: Date,
+    rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+    originDayOffset = 0,
+): number {
     const schedulerAligned = schedulerDayTimestamp(value, rolloverHour);
-    return Math.floor(schedulerAligned / DAY_MS);
+    return Math.floor(schedulerAligned / DAY_MS) - Math.trunc(originDayOffset);
 }
 
-export function fromDayNumber(dayNumber: number, rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR): Date {
-    const normalizedDay = Math.trunc(dayNumber);
+export function fromDayNumber(
+    dayNumber: number,
+    rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+    originDayOffset = 0,
+): Date {
+    const normalizedDay = Math.trunc(dayNumber) + Math.trunc(originDayOffset);
     const rolloverMs = normalizeRolloverHour(rolloverHour) * HOUR_MS;
 
     // Convert scheduler day number back into a wall-clock Date in local time.
@@ -55,27 +63,41 @@ export function elapsedSchedulerDays(
     lastReview: Date,
     now: Date,
     rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+    originDayOffset = 0,
 ): number {
-    return Math.max(0, toDayNumber(now, rolloverHour) - toDayNumber(lastReview, rolloverHour));
+    return Math.max(
+        0,
+        toDayNumber(now, rolloverHour, originDayOffset) - toDayNumber(lastReview, rolloverHour, originDayOffset),
+    );
 }
 
-export function dueDateFromCard(card: Card, now: Date): Date {
+export function dueDateFromCard(
+    card: Card,
+    now: Date,
+    rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+    originDayOffset = 0,
+): Date {
     if (card.queue === CardQueue.Learning) {
         return new Date(card.due);
     }
 
     if (card.queue === CardQueue.DayLearning || card.queue === CardQueue.Review) {
-        return fromDayNumber(card.due);
+        return fromDayNumber(card.due, rolloverHour, originDayOffset);
     }
 
     if (card.queue === CardQueue.New && card.due > 0) {
-        return fromDayNumber(card.due);
+        return fromDayNumber(card.due, rolloverHour, originDayOffset);
     }
 
     return now;
 }
 
-export function isCardDue(card: Card, now: Date): boolean {
+export function isCardDue(
+    card: Card,
+    now: Date,
+    rolloverHour = DEFAULT_SCHEDULER_ROLLOVER_HOUR,
+    originDayOffset = 0,
+): boolean {
     if (card.queue === CardQueue.Suspended || card.queue === CardQueue.SchedBuried || card.queue === CardQueue.UserBuried) {
         return false;
     }
@@ -85,7 +107,7 @@ export function isCardDue(card: Card, now: Date): boolean {
     }
 
     if (card.queue === CardQueue.DayLearning || card.queue === CardQueue.Review) {
-        return card.due <= toDayNumber(now);
+        return card.due <= toDayNumber(now, rolloverHour, originDayOffset);
     }
 
     if (card.queue === CardQueue.New) {

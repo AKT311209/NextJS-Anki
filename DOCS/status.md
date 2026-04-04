@@ -789,6 +789,25 @@
 							- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (24 tests)
 							- `npm run typecheck && npm run lint` ✅
 
+					- Fixed intermittent review-session startup failure: `no such function: fnvhash`.
+						- Root cause:
+							- `CollectionDatabaseManager.initialize()` could run concurrently and temporarily expose a newly-created DB handle before custom SQL functions were registered, leading to intermittent query failures in review queue SQL ordering.
+						- Fixes:
+							- `src/lib/storage/database.ts`
+								- Made initialization single-flight with an `initializationPromise` guard.
+								- Initialization now publishes `this.database` only after function registration + migrations complete.
+								- Added defensive function re-registration in `requireDatabase()` to keep the active handle safe.
+							- `src/lib/storage/sql-functions.ts`
+								- Made `registerSqlFunctions()` idempotent via `WeakSet` tracking to safely support repeated defensive registration calls.
+						- Regression tests:
+							- `src/lib/storage/__tests__/phase1-storage.test.ts`
+								- Added concurrent-initialize test ensuring `fnvhash()` remains callable.
+								- Added defensive re-registration test when the active DB handle is swapped.
+						- Verification completed:
+							- `npm test -- src/lib/storage/__tests__/phase1-storage.test.ts src/hooks/__tests__/phase4-review-completion.test.ts` ✅
+							- `npm run typecheck` ✅
+							- `npm run lint` ✅
+
 ## 2026-04-03
 
 - Fixed stale "Next card" ETA in the review completed panel (it could appear stuck at values like 21 minutes).
@@ -866,5 +885,164 @@
 		- `npm test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/components/review/__tests__/phase4-review-ui.test.tsx src/stores/__tests__/phase4-review-store.test.ts` ✅
 		- `npm test` ✅ (full suite, 74 tests)
 		- `npm run lint` ✅
+		- `npm run typecheck` ✅
+
+- Hardened review-session SQL function recovery for recurring `no such function: fnvhash` errors.
+	- Root cause refinement:
+		- A transient missing-function error during SQL statement preparation could still fail a queue query even with function registration in initialization paths.
+		- Prior idempotence guarding could skip re-registration in recovery scenarios where a forced overwrite is safer.
+	- Fix implemented:
+		- `src/lib/storage/sql-functions.ts`
+			- Added `RegisterSqlFunctionsOptions` with `force` support.
+			- `registerSqlFunctions()` now supports explicit forced re-registration.
+		- `src/lib/storage/database.ts`
+			- Added one-time automatic retry wrapper for DB operations when errors match `no such function:`.
+			- On retry path, forces SQL function re-registration and reruns the operation.
+			- Applied recovery wrapper to `select()`, `run()`, and `exec()`.
+	- Regression coverage:
+		- `src/lib/storage/__tests__/phase1-storage.test.ts`
+			- Added `retries query after transient missing-function prepare errors` by injecting a one-time prepare failure and verifying automatic recovery.
+	- Verification completed:
+		- `npm test -- src/lib/storage/__tests__/phase1-storage.test.ts src/hooks/__tests__/phase4-review-completion.test.ts` ✅
+		- `npm run typecheck && npm run lint` ✅
+
+- Fixed deck-option ordering changes that appeared to have no effect in review sessions (new-card gather/sort mostly impacted).
+	- Root cause:
+		- `useReview()` persisted day-scoped `allowedNewCardIds` using a scope key based only on `deckId + day`.
+		- After users changed ordering-related options, the previous scoped new-card ID pool could still be reused, masking gather-order changes for the same deck/day.
+	- Fix implemented:
+		- `src/hooks/use-review.ts`
+			- `buildReviewScopeKey()` now supports an ordering/limits fingerprint.
+			- Session scope key now includes:
+				- `newCardGatherPriority`, `newCardSortOrder`
+				- `newReviewMix`, `interdayLearningMix`, `reviewSortOrder`
+				- `limits.newPerDay`, `limits.reviewsPerDay`, `newCardsIgnoreReviewLimit`
+			- Scope initialization now occurs after resolved scheduler config is loaded, so the key reflects active deck options.
+	- Regression coverage:
+		- `src/hooks/__tests__/phase4-review-scope.test.ts`
+			- Added `invalidates scoped IDs when ordering fingerprint changes`.
+	- Verification completed:
+		- `npm run test -- src/hooks/__tests__/phase4-review-scope.test.ts` ✅
+		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm run typecheck` ✅
+
+- Fixed new-card daily quota resets when changing card ordering, and aligned gather/sort behavior with Anki Desktop’s queue model.
+	- Upstream parity reference (read-only):
+		- `ANKIDESKTOP/rslib/src/scheduler/queue/builder/gathering.rs`
+		- `ANKIDESKTOP/rslib/src/scheduler/queue/builder/sorting.rs`
+		- `ANKIDESKTOP/rslib/src/decks/limits.rs`
+		- `ANKIDESKTOP/rslib/src/decks/stats.rs`
+	- Root cause:
+		- Review flow relied on session-scoped new-card IDs; ordering changes could rotate/refresh that scope and effectively refill day new cards.
+		- Queue limits did not subtract Anki-style per-day studied counts (`new_studied`, `review_studied`) from deck limits.
+	- Fix implemented:
+		- `src/lib/storage/repositories/decks.ts`
+			- Added deck metadata fields for day counters (`lastDayStudied`, `newStudied`, `reviewStudied`, etc.).
+		- `src/hooks/use-review.ts`
+			- Removed runtime dependence on `allowedNewCardIds` session scoping for queue rebuilding.
+			- Added Anki-style deck/day stat delta updates on answer and undo, applied to answered deck and its parents.
+			- Kept review scope key day-based so ordering changes do not create a new daily scope.
+		- `src/lib/scheduler/queue.ts`
+			- Applied Anki-style limit reduction by today’s studied counts:
+				- `reviewLimit -= reviewStudied`
+				- `newLimit -= newStudied`
+				- when `newCardsIgnoreReviewLimit=false`, also `reviewLimit -= newStudied` and `newLimit=min(newLimit, reviewLimit)`
+			- Applied the same logic for both deck-scoped and global queue builds.
+	- Regression coverage:
+		- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+			- Added `keeps remaining daily new quota when gather order changes`.
+		- `src/hooks/__tests__/phase4-review-scope.test.ts`
+			- Updated scope test to assert stable day scope across ordering fingerprint changes.
+	- Verification completed:
+		- `npm run test -- src/hooks/__tests__/phase4-review-scope.test.ts src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅
+		- `npm run lint` ✅
+		- `npm run typecheck` ✅
+
+## 2026-04-04
+
+- Fixed Phase 7 dashboard statistics regressions affecting due counts, today metrics, and review heatmap rendering.
+	- Root causes:
+		- `overview.dueToday` in `use-stats` counted all `queue=0` cards as due, which inflated "Due today" with all new cards.
+		- Review logs are written with encoded IDs (`ms*10 + entropy digit`) in scheduler answering, but stats queries/heatmap treated `revlog.id` as raw milliseconds.
+		- This caused "Reviews today", "Today correct", and "Avg answer time" to remain at zero and made the heatmap appear empty.
+	- Fix implemented:
+		- `src/hooks/use-stats.ts`
+			- Updated `overview.dueToday` SQL to match deck due semantics (learning/review due only; no blanket `queue=0` inclusion).
+			- Added revlog timestamp decoding SQL expression to normalize mixed revlog ID formats:
+				- encoded IDs from local scheduler writes (`ms*10 + digit`)
+				- raw millisecond IDs from imported/history data
+			- Applied normalized timestamp expression to:
+				- today review aggregation filter
+				- heatmap history query and grouping
+				- hourly distribution computation
+			- Updated per-deck forecast due counters to keep new-card totals separate from due-now due counts.
+	- Regression coverage:
+		- `src/hooks/__tests__/phase7-stats.test.ts`
+			- Switched same-day revlog fixtures to encoded IDs.
+			- Added assertion that heatmap includes non-zero activity.
+			- Updated due-today expectation to exclude blanket new-card inclusion.
+	- Verification completed:
+		- `npm test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
+		- `npm run typecheck` ✅
+		- `npm run lint` ⚠️ currently reports an existing unrelated `react-hooks/preserve-manual-memoization` issue in `src/hooks/use-review.ts`.
+
+- Implemented a scheduler parity pass to align app behavior more closely with Anki Desktop for answer processing, FSRS transitions, review sorting, and day-rollover handling.
+	- `src/lib/scheduler/answering.ts`
+		- Added Anki-style gather-order-aware sibling bury suppression (do not bury cards from queues gathered earlier than the answered card).
+		- Removed same-deck-only restriction when burying siblings so cross-deck siblings can be buried (Anki-style note-scope behavior).
+	- `src/lib/scheduler/engine.ts`
+		- Added FSRS review-pass interval ordering constraints (`hard <= good <= easy`, with minimum spacing) to prevent invalid ordering.
+		- Added short-term FSRS gating by parameter capability (weights 17/18), not only config flag presence.
+		- Ensured `Easy` from Learning/Relearning graduates to Review consistently.
+		- Tightened FSRS fallback scheduling rounding/clamping for closer parity.
+	- `src/lib/scheduler/queue.ts`
+		- Refined review sorting SQL:
+			- FSRS ease order now uses FSRS difficulty semantics.
+			- Added FSRS relative-overdueness ordering path.
+			- Added scoped deck-order CASE path.
+			- Standardized deterministic random tie-break via `fnvhash(id, mod)`.
+	- `src/hooks/use-review.ts`
+		- Added automatic unbury-on-day-rollover before queue initialization.
+		- Persisted rollover marker (`lastUnburiedDay` / `last_unburied_day`) in global config.
+	- `src/app/review/[deckId]/page.tsx`
+		- Added focus guard for timed auto-advance actions so they do not fire while window/tab is unfocused.
+	- `src/lib/storage/sql-functions.ts`
+		- Added `extract_fsrs_relative_retrievability` SQL function.
+		- Kept fixed-arity SQL function registrations to avoid runtime arg-count mismatch errors.
+	- Tests and fixes:
+		- Updated `src/lib/scheduler/__tests__/phase2-scheduler.test.ts` with regressions for bury behavior, FSRS ease ordering, interval ordering, and short-term gating.
+		- Added `src/hooks/__tests__/use-review-rollover.test.ts` for rollover unbury behavior.
+		- Minor strict-typing fix in `src/hooks/use-stats.ts` for deck config property access.
+	- Verification completed:
+		- `npm test -- src/lib/storage/__tests__/phase1-storage.test.ts src/hooks/__tests__/use-review-rollover.test.ts src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (42/42)
+		- `npm run typecheck` ✅
+
+- Addressed the remaining high-priority scheduler parity gaps from the deep parity audit.
+	- `src/lib/scheduler/queue.ts`
+		- Normalized second-based intraday due timestamps to milliseconds in SQL range filters and returned queue cards.
+		- Included `Preview` queue cards in intraday gather/count paths.
+		- Applied collection day offset through queue day math and gather hashing.
+		- Updated FSRS review ordering SQL to Anki-like timing-aware function signatures and `odue`-aware sort semantics.
+	- `src/lib/scheduler/burying.ts`
+		- `unburyCards()` now restores `Learning` vs `DayLearning` based on due representation (intraday timestamp vs scheduler day).
+	- `src/lib/storage/sql-functions.ts`
+		- Refactored `extract_fsrs_retrievability` to 6-arg parity signature (`data,due,ivl,today,nextDayAt,now`) and due/ivl-aware elapsed-time derivation.
+		- Updated `extract_fsrs_relative_retrievability` to desired-retention-normalized relative-overdueness behavior with SM2-style fallback when FSRS state is missing.
+	- `src/lib/types/scheduler.ts`, `src/lib/scheduler/params.ts`, `src/lib/scheduler/states.ts`, `src/lib/scheduler/engine.ts`, `src/hooks/use-review.ts`, `src/lib/storage/bootstrap.ts`
+		- Added/normalized `minimumLapseInterval`, preview delays, and `collectionDayOffset` support.
+		- Derived collection day offset from `col.crt` and propagated offset-aware day math through queue building, due checks, rollover handling, and completion-state calculations.
+		- Preserved relearning review interval persistence behavior for FSRS/SM2 transition paths.
+	- `src/lib/scheduler/answering.ts`
+		- Added filtered-preview answer handling (delay vs finish behavior) and filtered-rescheduling restoration behavior.
+		- Replaced local easy-day heuristic with weighted load-balance-style day selection (load weighting + sibling penalty + deterministic seeded selection).
+	- Regression coverage:
+		- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+			- Added tests for second-based due normalization, unbury queue restoration by due shape, filtered preview behavior, collection day offset due gating, and updated easy-day expectations for weighted selection.
+		- `src/lib/storage/__tests__/phase1-storage.test.ts`
+			- Updated retrievability SQL-function signature assertions.
+		- `src/hooks/__tests__/use-review-rollover.test.ts`
+			- Verified day-rollover unbury behavior against persisted marker state.
+	- Verification completed:
+		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/hooks/__tests__/use-review-rollover.test.ts src/lib/storage/__tests__/phase1-storage.test.ts` ✅ (46/46)
 		- `npm run typecheck` ✅
 

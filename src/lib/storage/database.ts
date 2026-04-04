@@ -94,6 +94,7 @@ export class CollectionDatabaseManager {
     private sqlJs: SqlJsStatic | null = null;
     private database: SqlJsDatabase | null = null;
     private initialized = false;
+    private initializationPromise: Promise<void> | null = null;
     private opfsProbeSucceeded = false;
     private connections = new Map<string, CollectionDatabaseConnectionImpl>();
     private transactionDepth = 0;
@@ -125,25 +126,45 @@ export class CollectionDatabaseManager {
             return;
         }
 
-        if (this.options.preferOpfs) {
-            this.opfsProbeSucceeded = await this.probeWaSqliteOpfsSupport();
+        if (this.initializationPromise) {
+            await this.initializationPromise;
+            return;
         }
 
-        this.sqlJs = await initSqlJs({
-            locateFile: (fileName) => {
-                if (fileName.endsWith(".wasm")) {
-                    return resolveSqlJsWasmPath(fileName);
-                }
-                return fileName;
-            },
-        });
-        const persistedBytes = this.options.initialBytes ?? (await this.readPersistedBytes());
-        this.database = new this.sqlJs.Database(persistedBytes ?? undefined);
+        this.initializationPromise = (async () => {
+            if (this.options.preferOpfs) {
+                this.opfsProbeSucceeded = await this.probeWaSqliteOpfsSupport();
+            }
 
-        registerSqlFunctions(this.database);
-        applyMigrations(this.database);
+            const sqlJs = await initSqlJs({
+                locateFile: (fileName) => {
+                    if (fileName.endsWith(".wasm")) {
+                        return resolveSqlJsWasmPath(fileName);
+                    }
+                    return fileName;
+                },
+            });
+            const persistedBytes = this.options.initialBytes ?? (await this.readPersistedBytes());
+            const database = new sqlJs.Database(persistedBytes ?? undefined);
 
-        this.initialized = true;
+            registerSqlFunctions(database);
+            applyMigrations(database);
+
+            this.sqlJs = sqlJs;
+            this.database = database;
+            this.initialized = true;
+        })();
+
+        try {
+            await this.initializationPromise;
+        } catch (error) {
+            this.sqlJs = null;
+            this.database = null;
+            this.initialized = false;
+            throw error;
+        } finally {
+            this.initializationPromise = null;
+        }
     }
 
     public async getConnection(connectionId = "main"): Promise<CollectionDatabaseConnection> {
@@ -164,16 +185,7 @@ export class CollectionDatabaseManager {
         params?: BindParams,
     ): Promise<T[]> {
         const db = await this.requireDatabase();
-        const statement = db.prepare(sql, params);
-        try {
-            const rows: T[] = [];
-            while (statement.step()) {
-                rows.push(statement.getAsObject() as T);
-            }
-            return rows;
-        } finally {
-            statement.free();
-        }
+        return this.withMissingFunctionRecovery(db, () => this.executeSelect<T>(db, sql, params));
     }
 
     public async get<T = QueryRow>(
@@ -186,13 +198,15 @@ export class CollectionDatabaseManager {
 
     public async run(sql: string, params?: BindParams): Promise<void> {
         const db = await this.requireDatabase();
-        db.run(sql, params);
+        this.withMissingFunctionRecovery(db, () => {
+            db.run(sql, params);
+        });
         this.onPotentialMutation(sql);
     }
 
     public async exec(sql: string, params?: BindParams): Promise<QueryExecResult[]> {
         const db = await this.requireDatabase();
-        const result = db.exec(sql, params);
+        const result = this.withMissingFunctionRecovery(db, () => db.exec(sql, params));
         this.onPotentialMutation(sql);
         return result;
     }
@@ -294,7 +308,38 @@ export class CollectionDatabaseManager {
         if (!this.database) {
             throw new Error("Database is not initialized");
         }
+        registerSqlFunctions(this.database);
         return this.database;
+    }
+
+    private executeSelect<T = QueryRow>(
+        db: SqlJsDatabase,
+        sql: string,
+        params?: BindParams,
+    ): T[] {
+        const statement = db.prepare(sql, params);
+        try {
+            const rows: T[] = [];
+            while (statement.step()) {
+                rows.push(statement.getAsObject() as T);
+            }
+            return rows;
+        } finally {
+            statement.free();
+        }
+    }
+
+    private withMissingFunctionRecovery<T>(db: SqlJsDatabase, operation: () => T): T {
+        try {
+            return operation();
+        } catch (error) {
+            if (!isMissingSqlFunctionError(error)) {
+                throw error;
+            }
+
+            registerSqlFunctions(db, { force: true });
+            return operation();
+        }
     }
 
     private onPotentialMutation(sql: string): void {
@@ -379,6 +424,14 @@ function isMutatingSql(sql: string): boolean {
         normalized.startsWith("ALTER") ||
         normalized.startsWith("VACUUM")
     );
+}
+
+function isMissingSqlFunctionError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+
+    return /no such function:/i.test(error.message);
 }
 
 const IDB_DB_NAME = "nextjs-anki";

@@ -12,7 +12,7 @@ import type {
     SchedulerReviewMix,
     SchedulerReviewSortOrder,
 } from "@/lib/types/scheduler";
-import { toDayNumber } from "@/lib/scheduler/states";
+import { fromDayNumber, toDayNumber } from "@/lib/scheduler/states";
 
 type LimitKind = "new" | "review";
 type BuryKind = "new" | "review" | "interday-learning";
@@ -23,10 +23,18 @@ interface SiblingBuryMode {
     readonly buryInterdayLearning: boolean;
 }
 
+const UNIX_EPOCH_TIMESTAMP_THRESHOLD = 1_000_000_000;
+const UNIX_EPOCH_MILLISECONDS_THRESHOLD = 1_000_000_000_000;
+
 interface DeckLimitState {
     reviewLimit: number;
     newLimit: number;
     capNewToReview: boolean;
+}
+
+interface StudiedCountsToday {
+    readonly newStudied: number;
+    readonly reviewStudied: number;
 }
 
 interface DeckScopeContext {
@@ -46,23 +54,40 @@ export class SchedulerQueueBuilder {
         const now = request.now;
         const nowMs = now.getTime();
         const learnAheadCutoffMs = nowMs + config.learnAheadSeconds * 1000;
-        const today = toDayNumber(now);
+        const today = toDayNumber(now, undefined, config.collectionDayOffset);
         const buriedIds = request.buriedCardIds ?? new Set<number>();
-        const scopeContext = await this.resolveDeckScopeContext(request.deckId, config);
+        const scopeContext = await this.resolveDeckScopeContext(request.deckId, config, today);
         const activeDeckIds = scopeContext?.activeDeckIds;
 
         const [
-            learningIntradayDueNow,
-            learningIntradayDueAhead,
+            learningIntradayDueNowRaw,
+            previewIntradayDueNow,
+            learningIntradayDueAheadRaw,
+            previewIntradayDueAhead,
             learningInterdayDue,
             reviewCards,
             allNewCards,
         ] = await Promise.all([
             this.selectCardsByDueRange(CardQueue.Learning, undefined, nowMs, activeDeckIds),
+            this.selectCardsByDueRange(CardQueue.Preview, undefined, nowMs, activeDeckIds),
             this.selectCardsByDueRange(CardQueue.Learning, nowMs + 1, learnAheadCutoffMs, activeDeckIds),
+            this.selectCardsByDueRange(CardQueue.Preview, nowMs + 1, learnAheadCutoffMs, activeDeckIds),
             this.selectDueCards(CardQueue.DayLearning, today, activeDeckIds),
-            this.selectReviewDueCards(today, activeDeckIds, config.reviewSortOrder, now),
-            this.selectNewCardsForGather(now, activeDeckIds, config.newCardGatherPriority),
+            this.selectReviewDueCards(
+                today,
+                activeDeckIds,
+                config.reviewSortOrder,
+                now,
+                config.useFsrs,
+                config.collectionDayOffset,
+            ),
+            this.selectNewCardsForGather(now, activeDeckIds, config.newCardGatherPriority, config.collectionDayOffset),
+        ]);
+
+        const learningIntradayDueNow = sortIntradayByDue([...learningIntradayDueNowRaw, ...previewIntradayDueNow]);
+        const learningIntradayDueAhead = sortIntradayByDue([
+            ...learningIntradayDueAheadRaw,
+            ...previewIntradayDueAhead,
         ]);
 
         const allowedNewCardIds = request.allowedNewCardIds;
@@ -95,7 +120,16 @@ export class SchedulerQueueBuilder {
         let flatReviewLimit = Math.max(0, Math.trunc(config.limits.reviewsPerDay));
         let flatNewLimit = Math.max(0, Math.trunc(config.limits.newPerDay));
 
-        if (!config.newCardsIgnoreReviewLimit) {
+        if (!scopeContext) {
+            const studiedCounts = await this.loadStudiedCountsForToday(activeDeckIds, today);
+            flatReviewLimit = Math.max(0, flatReviewLimit - studiedCounts.reviewStudied);
+            flatNewLimit = Math.max(0, flatNewLimit - studiedCounts.newStudied);
+
+            if (!config.newCardsIgnoreReviewLimit) {
+                flatReviewLimit = Math.max(0, flatReviewLimit - studiedCounts.newStudied);
+                flatNewLimit = Math.min(flatNewLimit, flatReviewLimit);
+            }
+        } else if (!config.newCardsIgnoreReviewLimit) {
             flatNewLimit = Math.min(flatNewLimit, flatReviewLimit);
         }
 
@@ -205,6 +239,7 @@ export class SchedulerQueueBuilder {
     private async resolveDeckScopeContext(
         deckId: number | undefined,
         baseConfig: SchedulerConfig,
+        today: number,
     ): Promise<DeckScopeContext | undefined> {
         if (deckId === undefined) {
             return undefined;
@@ -259,9 +294,18 @@ export class SchedulerQueueBuilder {
                 },
             });
 
-            const reviewLimit = Math.max(0, Math.trunc(deckConfig.limits.reviewsPerDay));
-            const newLimitBase = Math.max(0, Math.trunc(deckConfig.limits.newPerDay));
+            const studiedCounts = getDeckStudiedCountsForToday(deck, today);
             const capNewToReview = !deckConfig.newCardsIgnoreReviewLimit;
+
+            let reviewLimit = Math.max(0, Math.trunc(deckConfig.limits.reviewsPerDay));
+            let newLimitBase = Math.max(0, Math.trunc(deckConfig.limits.newPerDay));
+
+            reviewLimit = Math.max(0, reviewLimit - studiedCounts.reviewStudied);
+            newLimitBase = Math.max(0, newLimitBase - studiedCounts.newStudied);
+
+            if (capNewToReview) {
+                reviewLimit = Math.max(0, reviewLimit - studiedCounts.newStudied);
+            }
 
             limitsByDeckId.set(deck.id, {
                 reviewLimit,
@@ -467,30 +511,42 @@ export class SchedulerQueueBuilder {
             return [];
         }
 
-        const minDueSql = minDue === undefined ? "" : "AND due >= ?";
+        const normalizedDueSql =
+            `CASE WHEN due > 0 AND due < ${UNIX_EPOCH_MILLISECONDS_THRESHOLD} THEN due * 1000 ELSE due END`;
+        const minDueSql = minDue === undefined ? "" : `AND ${normalizedDueSql} >= ?`;
         const minDueParams = minDue === undefined ? [] : [minDue];
         const deckFilter = buildDeckFilter(deckIds);
 
-        return this.connection.select<Card>(
+        const cards = await this.connection.select<Card>(
             `
             SELECT *
             FROM cards
             WHERE queue = ?
               ${deckFilter.sql}
               ${minDueSql}
-              AND due <= ?
-            ORDER BY due ASC, id ASC
+              AND ${normalizedDueSql} <= ?
+            ORDER BY ${normalizedDueSql} ASC, id ASC
             `,
             [queue, ...deckFilter.params, ...minDueParams, maxDue],
         );
+
+        if (queue !== CardQueue.Learning && queue !== CardQueue.Preview) {
+            return cards;
+        }
+
+        return cards.map((card) => ({
+            ...card,
+            due: normalizeIntradayDueToMilliseconds(card.due),
+        }));
     }
 
     private async selectNewCardsForGather(
         now: Date,
         deckIds: readonly number[] | undefined,
         gatherPriority: SchedulerNewCardGatherPriority,
+        collectionDayOffset: number,
     ): Promise<Card[]> {
-        const day = toDayNumber(now);
+        const day = toDayNumber(now, undefined, collectionDayOffset);
         const gatherSalt = knuthSalt(day);
 
         if (gatherPriority === "deck" || gatherPriority === "deck-then-random-notes") {
@@ -584,14 +640,18 @@ export class SchedulerQueueBuilder {
         deckIds: readonly number[] | undefined,
         sortOrder: SchedulerReviewSortOrder,
         now: Date,
+        useFsrs: boolean,
+        collectionDayOffset: number,
     ): Promise<Card[]> {
         const deckFilter = buildDeckFilter(deckIds);
-        const nowDay = toDayNumber(now);
+        const nowDay = toDayNumber(now, undefined, collectionDayOffset);
+        const nextDayAtMs = fromDayNumber(nowDay + 1, undefined, collectionDayOffset).getTime();
 
         const { sql, params } = reviewSortOrderSql(sortOrder, {
             nowMs: now.getTime(),
             nowDay,
-        });
+            nextDayAtMs,
+        }, useFsrs, deckIds);
 
         return this.connection.select<Card>(
             `
@@ -616,6 +676,33 @@ export class SchedulerQueueBuilder {
             }
             return true;
         });
+    }
+
+    private async loadStudiedCountsForToday(
+        deckIds: readonly number[] | undefined,
+        today: number,
+    ): Promise<StudiedCountsToday> {
+        const decks = new DecksRepository(this.connection);
+        const allDecks = await decks.list();
+        const includedDeckIds = deckIds ? new Set(deckIds) : null;
+
+        let newStudied = 0;
+        let reviewStudied = 0;
+
+        for (const deck of allDecks) {
+            if (includedDeckIds && !includedDeckIds.has(deck.id)) {
+                continue;
+            }
+
+            const counts = getDeckStudiedCountsForToday(deck, today);
+            newStudied += counts.newStudied;
+            reviewStudied += counts.reviewStudied;
+        }
+
+        return {
+            newStudied,
+            reviewStudied,
+        };
     }
 }
 
@@ -663,14 +750,52 @@ function deckDepth(name: string): number {
     return name.split("::").filter((part) => part.length > 0).length;
 }
 
+function getDeckStudiedCountsForToday(deck: DeckRecord, today: number): StudiedCountsToday {
+    const lastDayStudied = toTruncNumber(deck.lastDayStudied);
+    if (lastDayStudied !== today) {
+        return {
+            newStudied: 0,
+            reviewStudied: 0,
+        };
+    }
+
+    return {
+        newStudied: toTruncNumber(deck.newStudied),
+        reviewStudied: toTruncNumber(deck.reviewStudied),
+    };
+}
+
+function toTruncNumber(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return 0;
+    }
+
+    return Math.trunc(value);
+}
+
 function summarizeCounts(cards: readonly Card[]): QueueBuildResult["counts"] {
     return {
         learning: cards
-            .filter((card) => card.queue === CardQueue.Learning || card.queue === CardQueue.DayLearning)
+            .filter(
+                (card) =>
+                    card.queue === CardQueue.Learning ||
+                    card.queue === CardQueue.DayLearning ||
+                    card.queue === CardQueue.Preview,
+            )
             .length,
         review: cards.filter((card) => card.queue === CardQueue.Review).length,
         new: cards.filter((card) => card.queue === CardQueue.New).length,
     };
+}
+
+function sortIntradayByDue(cards: readonly Card[]): Card[] {
+    return [...cards].sort((left, right) => {
+        if (left.due !== right.due) {
+            return left.due - right.due;
+        }
+
+        return left.id - right.id;
+    });
 }
 
 function mergeByReviewMix<T>(
@@ -875,72 +1000,115 @@ function maybeDeferCollapsedLearningRepeat(
     return reordered;
 }
 
+function normalizeIntradayDueToMilliseconds(due: number): number {
+    const normalized = Math.trunc(due);
+    if (normalized <= UNIX_EPOCH_TIMESTAMP_THRESHOLD) {
+        return normalized;
+    }
+
+    if (normalized < UNIX_EPOCH_MILLISECONDS_THRESHOLD) {
+        return normalized * 1000;
+    }
+
+    return normalized;
+}
+
 function reviewSortOrderSql(
     sortOrder: SchedulerReviewSortOrder,
     timing: {
         readonly nowMs: number;
         readonly nowDay: number;
+        readonly nextDayAtMs: number;
     },
+    useFsrs: boolean,
+    activeDeckIds?: readonly number[],
 ): {
     readonly sql: string;
     readonly params: readonly number[];
 } {
+    const randomTieBreaker = "fnvhash(CAST(id AS TEXT) || '|' || CAST(mod AS TEXT)) ASC";
+    const deckOrder = deckOrderSql(activeDeckIds);
+    const dueForSort = "CASE WHEN odue != 0 THEN odue ELSE due END";
+
     if (sortOrder === "due-then-deck") {
-        return { sql: "due ASC, did ASC, fnvhash(id) ASC", params: [] };
+        return { sql: `due ASC, ${deckOrder} ASC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "deck-then-due") {
-        return { sql: "did ASC, due ASC, fnvhash(id) ASC", params: [] };
+        return { sql: `${deckOrder} ASC, due ASC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "interval-ascending") {
-        return { sql: "ivl ASC, fnvhash(id) ASC", params: [] };
+        return { sql: `ivl ASC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "interval-descending") {
-        return { sql: "ivl DESC, fnvhash(id) ASC", params: [] };
+        return { sql: `ivl DESC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "ease-ascending") {
-        return { sql: "factor ASC, fnvhash(id) ASC", params: [] };
+        return useFsrs
+            ? { sql: `extract_fsrs_variable(data, 'd') DESC, ${randomTieBreaker}`, params: [] }
+            : { sql: `factor ASC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "ease-descending") {
-        return { sql: "factor DESC, fnvhash(id) ASC", params: [] };
+        return useFsrs
+            ? { sql: `extract_fsrs_variable(data, 'd') ASC, ${randomTieBreaker}`, params: [] }
+            : { sql: `factor DESC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "retrievability-ascending") {
         return {
-            sql: "extract_fsrs_retrievability(data, ?, ?) ASC, fnvhash(id) ASC",
-            params: [-0.5, timing.nowMs],
+            sql: `extract_fsrs_retrievability(data, ${dueForSort}, ivl, ?, ?, ?) ASC, ${randomTieBreaker}`,
+            params: [timing.nowDay, timing.nextDayAtMs, timing.nowMs],
         };
     }
 
     if (sortOrder === "retrievability-descending") {
         return {
-            sql: "extract_fsrs_retrievability(data, ?, ?) DESC, fnvhash(id) ASC",
-            params: [-0.5, timing.nowMs],
+            sql: `extract_fsrs_retrievability(data, ${dueForSort}, ivl, ?, ?, ?) DESC, ${randomTieBreaker}`,
+            params: [timing.nowDay, timing.nextDayAtMs, timing.nowMs],
         };
     }
 
     if (sortOrder === "relative-overdueness") {
+        if (useFsrs) {
+            return {
+                sql: `extract_fsrs_relative_retrievability(data, ${dueForSort}, ivl, ?, ?, ?) ASC, ${randomTieBreaker}`,
+                params: [timing.nowDay, timing.nextDayAtMs, timing.nowMs],
+            };
+        }
+
         return {
-            sql: "((? - due) * 1.0 / CASE WHEN ivl <= 0 THEN 1 ELSE ivl END) DESC, fnvhash(id) ASC",
+            sql: `-(1 + CAST(? - ${dueForSort} + 0.001 AS REAL) / CASE WHEN ivl <= 0 THEN 1 ELSE ivl END) ASC, ${randomTieBreaker}`,
             params: [timing.nowDay],
         };
     }
 
     if (sortOrder === "random") {
-        return { sql: "fnvhash(id) ASC", params: [] };
+        return { sql: randomTieBreaker, params: [] };
     }
 
     if (sortOrder === "added") {
-        return { sql: "nid ASC, ord ASC, fnvhash(id) ASC", params: [] };
+        return { sql: `nid ASC, ord ASC, ${randomTieBreaker}`, params: [] };
     }
 
     if (sortOrder === "reverse-added") {
-        return { sql: "nid DESC, ord ASC, fnvhash(id) ASC", params: [] };
+        return { sql: `nid DESC, ord ASC, ${randomTieBreaker}`, params: [] };
     }
 
-    return { sql: "due ASC, fnvhash(id) ASC", params: [] };
+    return { sql: `due ASC, ${randomTieBreaker}`, params: [] };
+}
+
+function deckOrderSql(activeDeckIds: readonly number[] | undefined): string {
+    if (!activeDeckIds || activeDeckIds.length === 0) {
+        return "did";
+    }
+
+    const whenClauses = activeDeckIds
+        .map((deckId, index) => `WHEN ${Math.trunc(deckId)} THEN ${index}`)
+        .join(" ");
+
+    return `CASE did ${whenClauses} ELSE 2147483647 END`;
 }

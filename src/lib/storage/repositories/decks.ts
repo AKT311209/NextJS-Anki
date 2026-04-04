@@ -10,6 +10,11 @@ export interface DeckRecord {
     readonly dyn?: number;
     readonly extendNew?: number;
     readonly extendRev?: number;
+    readonly lastDayStudied?: number;
+    readonly newStudied?: number;
+    readonly reviewStudied?: number;
+    readonly learningStudied?: number;
+    readonly millisecondsStudied?: number;
     readonly mod?: number;
     readonly usn?: number;
 }
@@ -44,6 +49,11 @@ export class DecksRepository {
             dyn: partial.dyn ?? 0,
             extendNew: partial.extendNew ?? 0,
             extendRev: partial.extendRev ?? 0,
+            lastDayStudied: partial.lastDayStudied ?? 0,
+            newStudied: partial.newStudied ?? 0,
+            reviewStudied: partial.reviewStudied ?? 0,
+            learningStudied: partial.learningStudied ?? 0,
+            millisecondsStudied: partial.millisecondsStudied ?? 0,
             collapsed: partial.collapsed ?? false,
             browserCollapsed: partial.browserCollapsed ?? false,
             mod: partial.mod ?? now,
