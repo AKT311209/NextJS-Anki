@@ -13,6 +13,7 @@ export interface ReviewCardProps {
     readonly onRevealAnswer?: () => void;
     readonly autoPlayAudio?: boolean;
     readonly onAudioPlaybackStateChange?: (isPlaying: boolean) => void;
+    readonly nightMode?: boolean;
     readonly className?: string;
 }
 
@@ -26,6 +27,7 @@ export function ReviewCard({
     onRevealAnswer,
     autoPlayAudio = true,
     onAudioPlaybackStateChange,
+    nightMode = true,
     className,
 }: ReviewCardProps) {
     return (
@@ -49,7 +51,7 @@ export function ReviewCard({
                 html={isAnswerRevealed ? answerHtml : questionHtml}
                 css={css}
                 className="min-h-44"
-                nightMode
+                nightMode={nightMode}
                 autoPlayAudio={autoPlayAudio}
                 onAudioPlaybackStateChange={onAudioPlaybackStateChange}
             />

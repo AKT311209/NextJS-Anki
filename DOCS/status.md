@@ -1046,3 +1046,30 @@
 		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/hooks/__tests__/use-review-rollover.test.ts src/lib/storage/__tests__/phase1-storage.test.ts` ✅ (46/46)
 		- `npm run typecheck` ✅
 
+## 2026-04-06
+
+- Enhanced the Browse View with richer multi-select filters and custom pagination controls for easier batch operations.
+	- `src/hooks/use-search.ts`
+		- Added structured faceted-filter state with multi-select categories: decks, notetypes, tags, states, and flags.
+		- Added filter setter APIs (`setDeckFilters`, `setNotetypeFilters`, `setTagFilters`, `setStateFilters`, `setFlagFilters`, `clearFilters`) and exposed filter facet metadata for UI rendering.
+		- Added top-tag facet extraction from collection notes.
+		- Added SQL composition for faceted filters and combined it with free-text/query-parser search criteria.
+		- Added configurable page size (`setPageSize`) with clamped bounds and automatic page correction when current page exceeds available pages.
+	- `src/components/browser/SearchBar.tsx`
+		- Expanded quick-filter tokens (more `is:*`, id, and flag helpers).
+		- Added a faceted multi-select panel for states, flags, decks, notetypes, and top tags.
+		- Added “Clear filters” control for rapid reset.
+	- `src/components/browser/CardBrowser.tsx`
+		- Wired SearchBar to new faceted-filter APIs from `useSearch()`.
+		- Added custom “Items / page” numeric control with apply-on-enter/apply-button behavior.
+		- Added pagination range summary (`Showing X-Y of Z`) to improve batch-action visibility.
+	- `src/components/browser/__tests__/phase5-browser-ui.test.tsx`
+		- Updated SearchBar test setup for new props.
+		- Added regression coverage for faceted multi-select interactions and callbacks.
+
+- Verification completed:
+	- `npm test -- src/components/browser/__tests__/phase5-browser-ui.test.tsx src/lib/search/__tests__/phase5-search.test.ts` ✅
+	- `npm test -- src/components/browser/__tests__/phase5-browser-ui.test.tsx` ✅
+	- `npm run typecheck` ✅
+	- `npm run lint` ⚠️ still fails due pre-existing unrelated issues in `src/hooks/use-review.ts` (`react-hooks/preserve-manual-memoization` and companion exhaustive-deps warnings).
+

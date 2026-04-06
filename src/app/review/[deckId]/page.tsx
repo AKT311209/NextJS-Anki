@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useTheme } from "next-themes";
 import { AnswerButtons } from "@/components/review/AnswerButtons";
 import { ReviewCard } from "@/components/review/ReviewCard";
 import { ReviewProgress } from "@/components/review/ReviewProgress";
@@ -13,6 +14,8 @@ export default function ReviewPage() {
 
     const deckId = useMemo(() => parseDeckId(params.deckId), [params.deckId]);
     const review = useReview({ deckId });
+    const { resolvedTheme } = useTheme();
+    const nightMode = resolvedTheme === "dark";
     const [cardAudioPlaying, setCardAudioPlaying] = useState(false);
     const [manualAudioPlaying, setManualAudioPlaying] = useState(false);
     const [timerNowMs, setTimerNowMs] = useState(() => Date.now());
@@ -359,6 +362,7 @@ export default function ReviewPage() {
                         onRevealAnswer={review.revealAnswer}
                         autoPlayAudio={!review.config.disableAutoplay}
                         onAudioPlaybackStateChange={setCardAudioPlaying}
+                        nightMode={nightMode}
                     />
 
                     {review.stage === "answer" ? (

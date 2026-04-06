@@ -16,8 +16,7 @@ const SOUND_TAG_PATTERN = /\[sound:([^\]]+)\]/g;
 
 const BASE_CARD_CSS = `
 :host {
-    color: #e2e8f0;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-family, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
 }
 
 .anki-card-html {
@@ -39,7 +38,6 @@ const BASE_CARD_CSS = `
 }
 
 .anki-card-html .cloze {
-    color: #22d3ee;
     font-weight: 700;
 }
 
@@ -53,6 +51,10 @@ const NIGHT_MODE_CSS = `
     color: #f8fafc;
 }
 
+.anki-card-html .cloze {
+    color: #22d3ee;
+}
+
 a {
     color: #38bdf8;
 }
@@ -60,6 +62,26 @@ a {
 code,
 pre {
     background: rgba(15, 23, 42, 0.6);
+    border-radius: 0.375rem;
+}
+`;
+
+const DAY_MODE_CSS = `
+:host {
+    color: #1e293b;
+}
+
+.anki-card-html .cloze {
+    color: #0891b2;
+}
+
+a {
+    color: #0284c7;
+}
+
+code,
+pre {
+    background: rgba(241, 245, 249, 0.8);
     border-radius: 0.375rem;
 }
 `;
@@ -84,7 +106,7 @@ export function CardHtml({
         shadowRoot.innerHTML = "";
 
         const style = document.createElement("style");
-        style.textContent = `${BASE_CARD_CSS}\n${nightMode ? NIGHT_MODE_CSS : ""}\n${css}`;
+        style.textContent = `${BASE_CARD_CSS}\n${nightMode ? NIGHT_MODE_CSS : DAY_MODE_CSS}\n${css}`;
 
         const container = document.createElement("article");
         container.className = "anki-card-html";

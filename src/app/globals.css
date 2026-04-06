@@ -1,11 +1,45 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-    color-scheme: light dark;
+    color-scheme: light;
+
+    --bg-base: #ffffff;
+    --bg-surface: #f8fafc;
+    --bg-surface-alt: #f1f5f9;
+    --border-default: #e2e8f0;
+    --border-muted: #cbd5e1;
+    --text-heading: #0f172a;
+    --text-body: #1e293b;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+
+    --font-size-base: 16px;
+    --font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.dark {
+    color-scheme: dark;
+
+    --bg-base: #020617;
+    --bg-surface: #0f172a;
+    --bg-surface-alt: #1e293b;
+    --border-default: #1e293b;
+    --border-muted: #334155;
+    --text-heading: #f1f5f9;
+    --text-body: #e2e8f0;
+    --text-secondary: #cbd5e1;
+    --text-muted: #64748b;
 }
 
 * {
     box-sizing: border-box;
+}
+
+html {
+    font-size: var(--font-size-base);
+    font-family: var(--font-family);
 }
 
 html,
@@ -16,12 +50,109 @@ body {
 
 body {
     min-height: 100vh;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #020617;
-    color: #e2e8f0;
+    background: var(--bg-base);
+    color: var(--text-body);
 }
 
 a {
     color: inherit;
     text-decoration: none;
+}
+
+/*
+ * Light-mode bridge: remap hardcoded dark slate classes to light palette.
+ * Temporary until components are migrated to CSS variable-based classes.
+ * These override Tailwind's compiled utility values via !important.
+ */
+html:not(.dark) {
+    /* Backgrounds: dark surfaces → light surfaces */
+    & .bg-slate-900 { background-color: #ffffff !important; }
+    & .bg-slate-900\/50 { background-color: rgba(255, 255, 255, 0.5) !important; }
+    & .bg-slate-900\/60 { background-color: rgba(255, 255, 255, 0.6) !important; }
+    & .bg-slate-900\/70 { background-color: rgba(255, 255, 255, 0.7) !important; }
+    & .bg-slate-900\/80 { background-color: rgba(255, 255, 255, 0.8) !important; }
+    & .bg-slate-950 { background-color: #f8fafc !important; }
+    & .bg-slate-950\/30 { background-color: rgba(248, 250, 252, 0.3) !important; }
+    & .bg-slate-950\/40 { background-color: rgba(248, 250, 252, 0.4) !important; }
+    & .bg-slate-950\/50 { background-color: rgba(248, 250, 252, 0.5) !important; }
+    & .bg-slate-950\/60 { background-color: rgba(248, 250, 252, 0.6) !important; }
+    & .bg-slate-950\/70 { background-color: rgba(248, 250, 252, 0.7) !important; }
+    & .bg-slate-800 { background-color: #f1f5f9 !important; }
+    & .bg-slate-800\/60 { background-color: rgba(241, 245, 249, 0.6) !important; }
+
+    /* Borders */
+    & .border-slate-800 { border-color: #e2e8f0 !important; }
+    & .border-slate-800\/50 { border-color: rgba(226, 232, 240, 0.5) !important; }
+    & .border-slate-800\/80 { border-color: rgba(226, 232, 240, 0.8) !important; }
+    & .border-slate-800\/90 { border-color: rgba(226, 232, 240, 0.9) !important; }
+    & .border-slate-700 { border-color: #cbd5e1 !important; }
+    & .border-slate-700\/60 { border-color: rgba(203, 213, 225, 0.6) !important; }
+    & .border-slate-600 { border-color: #94a3b8 !important; }
+    & .focus\:border-slate-500:focus { border-color: #64748b !important; }
+
+    /* Text */
+    & .text-slate-100 { color: #0f172a !important; }
+    & .text-slate-200 { color: #1e293b !important; }
+    & .text-slate-300 { color: #475569 !important; }
+    & .text-slate-400 { color: #64748b !important; }
+    & .text-slate-500 { color: #94a3b8 !important; }
+    & .hover\:text-slate-200:hover { color: #1e293b !important; }
+
+    /* Hovers */
+    & .hover\:bg-slate-700:hover { background-color: #e2e8f0 !important; }
+    & .hover\:bg-slate-800:hover { background-color: #f1f5f9 !important; }
+    & .hover\:bg-slate-800\/40:hover { background-color: rgba(241, 245, 249, 0.4) !important; }
+    & .hover\:bg-slate-800\/60:hover { background-color: rgba(241, 245, 249, 0.6) !important; }
+    & .enabled\:hover\:bg-slate-800:hover:not(:disabled) { background-color: #f1f5f9 !important; }
+
+    /* Shadows */
+    & .shadow-slate-950\/20 { --tw-shadow-color: rgba(0, 0, 0, 0.08) !important; }
+
+    /* Accent adjustments for light mode */
+    & .border-sky-700\/60 { border-color: rgba(14, 165, 233, 0.5) !important; }
+    & .bg-sky-500\/10 { background-color: rgba(14, 165, 233, 0.08) !important; }
+    & .text-sky-300 { color: #0284c7 !important; }
+    & .text-sky-200\/70 { color: rgba(2, 132, 199, 0.7) !important; }
+    & .hover\:bg-sky-500\/20:hover { background-color: rgba(14, 165, 233, 0.15) !important; }
+
+    /* Error/semantic in light mode */
+    & .border-rose-800\/70 { border-color: rgba(225, 29, 72, 0.4) !important; }
+    & .bg-rose-950\/30 { background-color: rgba(255, 241, 242, 0.5) !important; }
+    & .text-rose-200 { color: #be123c !important; }
+    & .text-rose-200\/80 { color: rgba(190, 18, 60, 0.8) !important; }
+    & .border-rose-700\/70 { border-color: rgba(225, 29, 72, 0.4) !important; }
+    & .bg-rose-500\/10 { background-color: rgba(225, 29, 72, 0.06) !important; }
+    & .text-rose-100 { color: #be123c !important; }
+    & .hover\:bg-rose-500\/20:hover { background-color: rgba(225, 29, 72, 0.12) !important; }
+
+    & .border-amber-700\/70 { border-color: rgba(217, 119, 6, 0.4) !important; }
+    & .bg-amber-500\/10 { background-color: rgba(245, 158, 11, 0.08) !important; }
+    & .text-amber-200 { color: #b45309 !important; }
+
+    & .border-emerald-700\/70 { border-color: rgba(4, 120, 87, 0.4) !important; }
+    & .bg-emerald-500\/10 { background-color: rgba(16, 185, 129, 0.08) !important; }
+    & .bg-emerald-500\/15 { background-color: rgba(16, 185, 129, 0.1) !important; }
+    & .text-emerald-200 { color: #047857 !important; }
+    & .hover\:bg-emerald-500\/25:hover { background-color: rgba(16, 185, 129, 0.15) !important; }
+
+    /* Blue / Easy button */
+    & .border-blue-700\/70 { border-color: rgba(37, 99, 235, 0.4) !important; }
+    & .bg-blue-500\/15 { background-color: rgba(59, 130, 246, 0.1) !important; }
+    & .text-blue-200 { color: #1d4ed8 !important; }
+    & .hover\:bg-blue-500\/25:hover { background-color: rgba(59, 130, 246, 0.15) !important; }
+
+    /* Sky / Create Deck button */
+    & .text-sky-100 { color: #0369a1 !important; }
+
+    /* Amber overrides (hover for Hard button) */
+    & .bg-amber-500\/15 { background-color: rgba(245, 158, 11, 0.1) !important; }
+    & .hover\:bg-amber-500\/25:hover { background-color: rgba(245, 158, 11, 0.15) !important; }
+
+    /* Rose overrides (hover for Again button) */
+    & .bg-rose-500\/15 { background-color: rgba(225, 29, 72, 0.08) !important; }
+    & .hover\:bg-rose-500\/25:hover { background-color: rgba(225, 29, 72, 0.12) !important; }
+
+    /* Inputs */
+    & .bg-slate-950\/60 { background-color: rgba(248, 250, 252, 0.6) !important; }
+    & .placeholder\:text-slate-500::placeholder { color: #94a3b8 !important; }
 }
