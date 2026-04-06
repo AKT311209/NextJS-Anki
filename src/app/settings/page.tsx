@@ -32,21 +32,21 @@ const FONT_SIZE_OPTIONS: ReadonlyArray<{
     readonly value: FontSizeOption;
     readonly label: string;
 }> = [
-    { value: "small", label: "Small (14px)" },
-    { value: "medium", label: "Medium (16px)" },
-    { value: "large", label: "Large (18px)" },
-    { value: "x-large", label: "Extra Large (20px)" },
-];
+        { value: "small", label: "Small (14px)" },
+        { value: "medium", label: "Medium (16px)" },
+        { value: "large", label: "Large (18px)" },
+        { value: "x-large", label: "Extra Large (20px)" },
+    ];
 
 const FONT_FAMILY_OPTIONS: ReadonlyArray<{
     readonly value: FontFamilyOption;
     readonly label: string;
 }> = [
-    { value: "system", label: "System default" },
-    { value: "inter", label: "Inter" },
-    { value: "georgia", label: "Georgia (serif)" },
-    { value: "monospace", label: "Monospace" },
-];
+        { value: "system", label: "System default" },
+        { value: "inter", label: "Inter" },
+        { value: "georgia", label: "Georgia (serif)" },
+        { value: "monospace", label: "Monospace" },
+    ];
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -158,11 +158,10 @@ export default function SettingsPage() {
                                 setTheme(option.value);
                                 setThemeMode(option.value);
                             }}
-                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${
-                                resolvedTheme === option.value
+                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${resolvedTheme === option.value
                                     ? "border-sky-700/60 bg-sky-500/10 text-sky-300"
                                     : "border-slate-700 text-slate-200 hover:bg-slate-800"
-                            }`}
+                                }`}
                         >
                             {option.label}
                         </button>
@@ -181,11 +180,10 @@ export default function SettingsPage() {
                             key={option.value}
                             type="button"
                             onClick={() => setFontSize(option.value)}
-                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${
-                                fontSize === option.value
+                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${fontSize === option.value
                                     ? "border-sky-700/60 bg-sky-500/10 text-sky-300"
                                     : "border-slate-700 text-slate-200 hover:bg-slate-800"
-                            }`}
+                                }`}
                         >
                             {option.label}
                         </button>
@@ -207,11 +205,10 @@ export default function SettingsPage() {
                             key={option.value}
                             type="button"
                             onClick={() => setFontFamily(option.value)}
-                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${
-                                fontFamily === option.value
+                            className={`rounded-md border px-4 py-2 text-sm font-medium transition ${fontFamily === option.value
                                     ? "border-sky-700/60 bg-sky-500/10 text-sky-300"
                                     : "border-slate-700 text-slate-200 hover:bg-slate-800"
-                            }`}
+                                }`}
                         >
                             {option.label}
                         </button>

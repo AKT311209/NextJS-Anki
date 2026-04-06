@@ -65,11 +65,10 @@ export function AppRuntimeStatus() {
                 <div className="flex flex-wrap items-center gap-2">
                     <span
                         data-testid="network-status-pill"
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 font-semibold ${
-                            isOnline
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 font-semibold ${isOnline
                                 ? "border-emerald-700/70 bg-emerald-500/10 text-emerald-300"
                                 : "border-amber-700/70 bg-amber-500/10 text-amber-300"
-                        }`}
+                            }`}
                     >
                         {isOnline ? "Online" : "Offline"}
                     </span>
