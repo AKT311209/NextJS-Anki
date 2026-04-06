@@ -1073,3 +1073,61 @@
 	- `npm run typecheck` ✅
 	- `npm run lint` ⚠️ still fails due pre-existing unrelated issues in `src/hooks/use-review.ts` (`react-hooks/preserve-manual-memoization` and companion exhaustive-deps warnings).
 
+- Reimplemented stats logic/view to follow AnkiDesktop semantics for core cards (Today, Future Due, True Retention).
+	- `src/hooks/use-stats.ts`
+		- Added Anki-style data models to snapshot output:
+			- `today`
+			- `futureDue`
+			- `trueRetention`
+		- Ported Today stats logic from Anki (`answer_count`, `correct_count`, mature correctness, per-kind counters) using scheduler-day rollover boundaries.
+		- Ported True Retention period logic with Anki inclusion rules:
+			- period windows: today/yesterday/week/month/year/all-time
+			- exclusion of manual/rescheduled entries
+			- exclusion of cramming (`filtered` + `factor=0`) from true-retention stats
+		- Ported Future Due logic:
+			- excludes new + suspended cards
+			- uses original due for filtered cards
+			- computes backlog + daily load + due-by-day map with Anki-like timestamp/day handling
+		- Aligned heatmap/hourly filtering rules with Anki review-kind behavior.
+	- Added new stats UI components:
+		- `src/components/stats/TodayStatsCard.tsx`
+		- `src/components/stats/FutureDueCard.tsx`
+		- `src/components/stats/TrueRetentionCard.tsx`
+	- Rebuilt stats route UI around Anki-style top cards:
+		- `src/app/stats/page.tsx`
+		- keeps deck scoping/refresh controls and existing supplemental visualizations.
+	- Expanded Phase 7 tests for parity + edge cases:
+		- `src/hooks/__tests__/phase7-stats.test.ts`
+		- added assertions for Today/True Retention/Future Due and edge-case behavior (backlog, buried, cramming filtering).
+
+- Verification completed:
+	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
+	- `npx eslint src/hooks/use-stats.ts src/app/stats/page.tsx src/components/stats/TodayStatsCard.tsx src/components/stats/FutureDueCard.tsx src/components/stats/TrueRetentionCard.tsx src/hooks/__tests__/phase7-stats.test.ts --max-warnings=0` ✅
+	- `npm run typecheck` ✅
+	- `npm run lint` ⚠️ still fails due existing unrelated issues outside this scope (`src/components/shared/AppRuntimeStatus.tsx`, `src/hooks/use-review.ts`).
+
+- Refactored Stats UI and implemented Anki-like **Review hours** behavior.
+	- `src/hooks/use-stats.ts`
+		- Added `hourlyBreakdown` to `StatsSnapshot` with Anki-style ranges:
+			- `oneMonth`, `threeMonths`, `oneYear`, `allTime`
+		- Each bucket now tracks per-hour `total` and `correct` counts.
+		- Ported Anki hour-bucket semantics from Desktop graphs logic:
+			- Excludes `Filtered`, `Manual`, `Rescheduled` revlog kinds.
+			- Uses fixed local offset conversion and period cutoffs from scheduler next-day start.
+		- Kept `hourlyDistribution` for compatibility (derived from `allTime.total`).
+	- `src/components/stats/ReviewHoursCard.tsx`
+		- Added a new Anki-like hourly card with range switching (1m/3m/1y/all-time).
+		- Renders per-hour review bars + correct-percentage overlay behavior.
+		- Added per-hour tooltip details (time range, reviews, % correct, correct count).
+	- `src/app/stats/page.tsx`
+		- Replaced legacy simple hour bar block with `ReviewHoursCard`.
+		- Removed subtitle text: `Reimplemented with AnkiDesktop logic: Today, Future Due, and True Retention.`
+		- Cleaned header/layout for a leaner UI.
+	- `src/hooks/__tests__/phase7-stats.test.ts`
+		- Added assertions for hourly breakdown shape and totals/correctness across ranges.
+
+- Verification completed:
+	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
+	- `npx eslint src/hooks/use-stats.ts src/app/stats/page.tsx src/components/stats/ReviewHoursCard.tsx src/hooks/__tests__/phase7-stats.test.ts --max-warnings=0` ✅
+	- `npm run typecheck` ✅
+

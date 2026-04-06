@@ -2,18 +2,29 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCollection } from "@/hooks/use-collection";
-import { toDayNumber } from "@/lib/scheduler/states";
+import { fromDayNumber, toDayNumber } from "@/lib/scheduler/states";
 import { ensureCollectionBootstrap } from "@/lib/storage/bootstrap";
 import type { CollectionDatabaseConnection } from "@/lib/storage/database";
 import { ConfigRepository } from "@/lib/storage/repositories/config";
 import { DecksRepository, type DeckRecord } from "@/lib/storage/repositories/decks";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_SECS = 24 * 60 * 60;
 const HEATMAP_LOOKBACK_DAYS = 365;
 const RETENTION_WINDOW_DAYS = 30;
 const FORECAST_HORIZON_DAYS = 30;
 const DEFAULT_CACHE_TTL_MS = 30_000;
 const REVLOG_ID_TIMESTAMP_ENCODING_THRESHOLD = 10_000_000_000_000;
+const MATURE_INTERVAL_DAYS = 21;
+
+const REVLOG_REVIEW_KIND = {
+    Learning: 0,
+    Review: 1,
+    Relearning: 2,
+    Filtered: 3,
+    Manual: 4,
+    Rescheduled: 5,
+} as const;
 
 interface CachedStatsSnapshot {
     readonly createdAt: number;
@@ -43,6 +54,45 @@ export interface StatsOverview {
         readonly suspended: number;
         readonly buried: number;
     };
+}
+
+export interface TodayStats {
+    readonly answerCount: number;
+    readonly answerMillis: number;
+    readonly correctCount: number;
+    readonly matureCorrect: number;
+    readonly matureCount: number;
+    readonly learnCount: number;
+    readonly reviewCount: number;
+    readonly relearnCount: number;
+    readonly earlyReviewCount: number;
+}
+
+export interface TrueRetentionPeriod {
+    readonly youngPassed: number;
+    readonly youngFailed: number;
+    readonly maturePassed: number;
+    readonly matureFailed: number;
+}
+
+export interface TrueRetentionStats {
+    readonly today: TrueRetentionPeriod;
+    readonly yesterday: TrueRetentionPeriod;
+    readonly week: TrueRetentionPeriod;
+    readonly month: TrueRetentionPeriod;
+    readonly year: TrueRetentionPeriod;
+    readonly allTime: TrueRetentionPeriod;
+}
+
+export interface FutureDuePoint {
+    readonly dayOffset: number;
+    readonly dueCount: number;
+}
+
+export interface FutureDueStats {
+    readonly dueByDay: readonly FutureDuePoint[];
+    readonly haveBacklog: boolean;
+    readonly dailyLoad: number;
 }
 
 export interface DailyReviewPoint {
@@ -79,6 +129,19 @@ export interface DistributionPoint {
 export interface HourDistributionPoint {
     readonly hour: number;
     readonly count: number;
+}
+
+export interface HourlyBreakdownPoint {
+    readonly hour: number;
+    readonly total: number;
+    readonly correct: number;
+}
+
+export interface HourlyBreakdown {
+    readonly oneMonth: readonly HourlyBreakdownPoint[];
+    readonly threeMonths: readonly HourlyBreakdownPoint[];
+    readonly oneYear: readonly HourlyBreakdownPoint[];
+    readonly allTime: readonly HourlyBreakdownPoint[];
 }
 
 export interface DeckRetentionPoint {
@@ -122,16 +185,26 @@ export interface StatsSnapshot {
         readonly deckIds: readonly number[] | null;
     };
     readonly overview: StatsOverview;
+    readonly today: TodayStats;
+    readonly trueRetention: TrueRetentionStats;
+    readonly futureDue: FutureDueStats;
     readonly reviewHeatmap: readonly DailyReviewPoint[];
     readonly retention: readonly RetentionPoint[];
     readonly forecast: readonly ForecastPoint[];
     readonly intervalDistribution: readonly DistributionPoint[];
     readonly easeDistribution: readonly DistributionPoint[];
     readonly maturityBreakdown: readonly DistributionPoint[];
+    readonly hourlyBreakdown: HourlyBreakdown;
     readonly hourlyDistribution: readonly HourDistributionPoint[];
     readonly deckRetention: readonly DeckRetentionPoint[];
     readonly deckForecast: readonly DeckForecastPoint[];
     readonly fsrs: DeckFsrsSnapshot | null;
+}
+
+interface MutableHourlyBreakdownPoint {
+    readonly hour: number;
+    total: number;
+    correct: number;
 }
 
 export interface ComputeStatsSnapshotOptions {
@@ -165,15 +238,13 @@ interface CountRow {
     readonly total: number;
 }
 
-interface TodayReviewRow {
-    readonly total: number;
-    readonly retained: number;
-    readonly averageTimeMs: number;
-}
-
 interface RevlogHistoryRow {
     readonly timestampMs: number;
     readonly ease: number;
+    readonly reviewKind: number;
+    readonly lastIvl: number;
+    readonly factor: number;
+    readonly takenMillis: number;
 }
 
 interface CardStatsRow {
@@ -181,6 +252,8 @@ interface CardStatsRow {
     readonly type: number;
     readonly queue: number;
     readonly due: number;
+    readonly odue: number;
+    readonly odid: number;
     readonly ivl: number;
     readonly factor: number;
 }
@@ -370,17 +443,14 @@ export async function computeStatsSnapshot(
 
     const nowMs = now.getTime();
     const todayDay = toDayNumber(now);
-    const dayStartMs = startOfDayMs(now);
-    const dayEndMs = dayStartMs + DAY_MS - 1;
+    const nextDayStartMs = fromDayNumber(todayDay + 1).getTime();
     const historyStartDay = todayDay - (HEATMAP_LOOKBACK_DAYS - 1);
-    const historyStartMs = historyStartDay * DAY_MS;
     const revlogTimestampExpr = revlogTimestampSql("r");
 
     const [
         overviewRow,
         totalNotesRow,
         totalReviewsRow,
-        reviewsTodayRow,
         revlogHistoryRows,
         deckRetentionRows,
         cardRows,
@@ -424,29 +494,21 @@ export async function computeStatsSnapshot(
             `,
             [...cardScope.params],
         ),
-        connection.get<TodayReviewRow>(
-            `
-            SELECT
-                COUNT(*) AS total,
-                SUM(CASE WHEN r.ease > 1 THEN 1 ELSE 0 END) AS retained,
-                AVG(r.time) AS averageTimeMs
-            FROM revlog r
-            INNER JOIN cards c ON c.id = r.cid
-                        WHERE ${revlogTimestampExpr} BETWEEN ? AND ?
-              AND ${cardScope.whereSql}
-            `,
-            [dayStartMs, dayEndMs, ...cardScope.params],
-        ),
         connection.select<RevlogHistoryRow>(
             `
-                        SELECT ${revlogTimestampExpr} AS timestampMs, r.ease
+            SELECT
+                ${revlogTimestampExpr} AS timestampMs,
+                r.ease,
+                r.type AS reviewKind,
+                r.lastIvl,
+                r.factor,
+                r.time AS takenMillis
             FROM revlog r
             INNER JOIN cards c ON c.id = r.cid
-                        WHERE ${revlogTimestampExpr} >= ?
-              AND ${cardScope.whereSql}
-                        ORDER BY timestampMs ASC
+            WHERE ${cardScope.whereSql}
+            ORDER BY timestampMs ASC
             `,
-            [historyStartMs, ...cardScope.params],
+            [...cardScope.params],
         ),
         connection.select<DeckRetentionRow>(
             `
@@ -465,7 +527,7 @@ export async function computeStatsSnapshot(
         ),
         connection.select<CardStatsRow>(
             `
-            SELECT c.did, c.type, c.queue, c.due, c.ivl, c.factor
+            SELECT c.did, c.type, c.queue, c.due, c.odue, c.odid, c.ivl, c.factor
             FROM cards c
             WHERE ${cardScope.whereSql}
             `,
@@ -502,14 +564,15 @@ export async function computeStatsSnapshot(
     }
 
     const dueTodayLearningAndReview = asFiniteInteger(overviewRow?.dueToday);
+    const todayStats = buildTodayStats(revlogHistoryRows, nextDayStartMs);
 
     const overview: StatsOverview = {
-        reviewsToday: asFiniteInteger(reviewsTodayRow?.total),
-        correctRateToday: ratio(
-            asFiniteInteger(reviewsTodayRow?.retained),
-            asFiniteInteger(reviewsTodayRow?.total),
-        ),
-        averageAnswerSecondsToday: asFiniteNumber(reviewsTodayRow?.averageTimeMs) / 1000,
+        reviewsToday: todayStats.answerCount,
+        correctRateToday: ratio(todayStats.correctCount, todayStats.answerCount),
+        averageAnswerSecondsToday:
+            todayStats.answerCount > 0
+                ? todayStats.answerMillis / todayStats.answerCount / 1000
+                : 0,
         totalCards: asFiniteInteger(overviewRow?.totalCards),
         totalNotes: asFiniteInteger(totalNotesRow?.total),
         totalReviews: asFiniteInteger(totalReviewsRow?.total),
@@ -526,7 +589,13 @@ export async function computeStatsSnapshot(
 
     const reviewHeatmap = buildReviewHeatmap(historyStartDay, todayDay, revlogHistoryRows);
     const retention = buildRetentionSeries(reviewHeatmap);
-    const hourlyDistribution = buildHourlyDistribution(revlogHistoryRows);
+    const trueRetention = buildTrueRetentionStats(revlogHistoryRows, nextDayStartMs);
+    const futureDue = buildFutureDueStats(cardRows, nextDayStartMs, todayDay);
+    const hourlyBreakdown = buildHourlyBreakdown(revlogHistoryRows, nextDayStartMs, now);
+    const hourlyDistribution = hourlyBreakdown.allTime.map((point) => ({
+        hour: point.hour,
+        count: point.total,
+    }));
     const intervalDistribution = buildIntervalDistribution(cardRows);
     const easeDistribution = buildEaseDistribution(cardRows);
     const maturityBreakdown = buildMaturityBreakdown(cardRows);
@@ -554,17 +623,270 @@ export async function computeStatsSnapshot(
             deckIds: scopedDeckIds,
         },
         overview,
+        today: todayStats,
+        trueRetention,
+        futureDue,
         reviewHeatmap,
         retention,
         forecast,
         intervalDistribution,
         easeDistribution,
         maturityBreakdown,
+        hourlyBreakdown,
         hourlyDistribution,
         deckRetention,
         deckForecast,
         fsrs,
     };
+}
+
+function buildTodayStats(
+    historyRows: readonly RevlogHistoryRow[],
+    nextDayStartMs: number,
+): TodayStats {
+    const startOfTodayMs = nextDayStartMs - DAY_MS;
+
+    const today: {
+        answerCount: number;
+        answerMillis: number;
+        correctCount: number;
+        matureCorrect: number;
+        matureCount: number;
+        learnCount: number;
+        reviewCount: number;
+        relearnCount: number;
+        earlyReviewCount: number;
+    } = {
+        answerCount: 0,
+        answerMillis: 0,
+        correctCount: 0,
+        matureCorrect: 0,
+        matureCount: 0,
+        learnCount: 0,
+        reviewCount: 0,
+        relearnCount: 0,
+        earlyReviewCount: 0,
+    };
+
+    for (let index = historyRows.length - 1; index >= 0; index -= 1) {
+        const row = historyRows[index];
+        const timestampMs = asFiniteNumber(row.timestampMs);
+        if (timestampMs < startOfTodayMs) {
+            break;
+        }
+
+        const reviewKind = asFiniteInteger(row.reviewKind);
+        if (
+            reviewKind === REVLOG_REVIEW_KIND.Manual ||
+            reviewKind === REVLOG_REVIEW_KIND.Rescheduled
+        ) {
+            continue;
+        }
+
+        today.answerCount += 1;
+        today.answerMillis += Math.max(0, asFiniteInteger(row.takenMillis));
+
+        if (asFiniteInteger(row.ease) > 1) {
+            today.correctCount += 1;
+        }
+
+        if (asFiniteInteger(row.lastIvl) >= MATURE_INTERVAL_DAYS) {
+            today.matureCount += 1;
+            if (asFiniteInteger(row.ease) > 1) {
+                today.matureCorrect += 1;
+            }
+        }
+
+        if (reviewKind === REVLOG_REVIEW_KIND.Learning) {
+            today.learnCount += 1;
+        } else if (reviewKind === REVLOG_REVIEW_KIND.Review) {
+            today.reviewCount += 1;
+        } else if (reviewKind === REVLOG_REVIEW_KIND.Relearning) {
+            today.relearnCount += 1;
+        } else if (reviewKind === REVLOG_REVIEW_KIND.Filtered) {
+            today.earlyReviewCount += 1;
+        }
+    }
+
+    return today;
+}
+
+function buildTrueRetentionStats(
+    historyRows: readonly RevlogHistoryRow[],
+    nextDayStartMs: number,
+): TrueRetentionStats {
+    const nextDayStartSecs = Math.trunc(nextDayStartMs / 1000);
+    const day = DAY_SECS;
+
+    const periods = [
+        {
+            key: "today",
+            startSec: nextDayStartSecs - day,
+            endSec: nextDayStartSecs,
+        },
+        {
+            key: "yesterday",
+            startSec: nextDayStartSecs - day * 2,
+            endSec: nextDayStartSecs - day,
+        },
+        {
+            key: "week",
+            startSec: nextDayStartSecs - day * 7,
+            endSec: nextDayStartSecs,
+        },
+        {
+            key: "month",
+            startSec: nextDayStartSecs - day * 30,
+            endSec: nextDayStartSecs,
+        },
+        {
+            key: "year",
+            startSec: nextDayStartSecs - day * 365,
+            endSec: nextDayStartSecs,
+        },
+        {
+            key: "allTime",
+            startSec: 0,
+            endSec: nextDayStartSecs,
+        },
+    ] as const;
+
+    const stats: Record<
+        (typeof periods)[number]["key"],
+        {
+            youngPassed: number;
+            youngFailed: number;
+            maturePassed: number;
+            matureFailed: number;
+        }
+    > = {
+        today: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+        yesterday: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+        week: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+        month: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+        year: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+        allTime: { youngPassed: 0, youngFailed: 0, maturePassed: 0, matureFailed: 0 },
+    };
+
+    for (const row of historyRows) {
+        const reviewKind = asFiniteInteger(row.reviewKind);
+        const ease = asFiniteInteger(row.ease);
+        const factor = asFiniteInteger(row.factor);
+        const lastInterval = asFiniteInteger(row.lastIvl);
+
+        const affectsScheduling = ease > 0 && !(reviewKind === REVLOG_REVIEW_KIND.Filtered && factor === 0);
+        if (!affectsScheduling) {
+            continue;
+        }
+
+        const qualifiesForTrueRetention =
+            reviewKind === REVLOG_REVIEW_KIND.Review ||
+            lastInterval <= -DAY_SECS ||
+            lastInterval >= 1;
+        if (!qualifiesForTrueRetention) {
+            continue;
+        }
+
+        const reviewSec = Math.trunc(asFiniteNumber(row.timestampMs) / 1000);
+        const isYoung = lastInterval < MATURE_INTERVAL_DAYS;
+        const failed = ease === 1;
+
+        for (const period of periods) {
+            if (reviewSec < period.startSec || reviewSec >= period.endSec) {
+                continue;
+            }
+
+            const target = stats[period.key];
+            if (isYoung) {
+                if (failed) {
+                    target.youngFailed += 1;
+                } else {
+                    target.youngPassed += 1;
+                }
+            } else if (failed) {
+                target.matureFailed += 1;
+            } else {
+                target.maturePassed += 1;
+            }
+        }
+    }
+
+    return {
+        today: stats.today,
+        yesterday: stats.yesterday,
+        week: stats.week,
+        month: stats.month,
+        year: stats.year,
+        allTime: stats.allTime,
+    };
+}
+
+function buildFutureDueStats(
+    cardRows: readonly CardStatsRow[],
+    nextDayStartMs: number,
+    todayDay: number,
+): FutureDueStats {
+    const dueByDay = new Map<number, number>();
+    let haveBacklog = false;
+    let dailyLoad = 0;
+
+    for (const card of cardRows) {
+        const cardType = asFiniteInteger(card.type);
+        if (cardType === 0) {
+            continue;
+        }
+
+        const queue = asFiniteInteger(card.queue);
+        if (queue === -1) {
+            continue;
+        }
+
+        const rawDue = originalOrCurrentDue(card);
+        const dueDay = isUnixEpochTimestamp(rawDue)
+            ? Math.trunc((normalizeEpochTimestampToMs(rawDue) - nextDayStartMs) / DAY_MS)
+            : rawDue - todayDay;
+
+        dailyLoad += 1 / Math.max(1, asFiniteInteger(card.ivl));
+
+        if (dueDay <= 0 && (queue === -2 || queue === -3)) {
+            continue;
+        }
+
+        haveBacklog ||= dueDay < 0;
+        dueByDay.set(dueDay, (dueByDay.get(dueDay) ?? 0) + 1);
+    }
+
+    return {
+        dueByDay: [...dueByDay.entries()]
+            .sort((left, right) => left[0] - right[0])
+            .map(([dayOffset, dueCount]) => ({
+                dayOffset,
+                dueCount,
+            })),
+        haveBacklog,
+        dailyLoad: Math.max(0, Math.trunc(dailyLoad)),
+    };
+}
+
+function originalOrCurrentDue(card: CardStatsRow): number {
+    const originalDeckId = asFiniteInteger(card.odid);
+    if (originalDeckId !== 0) {
+        return asFiniteInteger(card.odue);
+    }
+
+    return asFiniteInteger(card.due);
+}
+
+function isUnixEpochTimestamp(value: number): boolean {
+    return value > 1_000_000_000;
+}
+
+function normalizeEpochTimestampToMs(value: number): number {
+    if (value >= 1_000_000_000_000) {
+        return value;
+    }
+
+    return value * 1000;
 }
 
 function buildReviewHeatmap(
@@ -575,6 +897,14 @@ function buildReviewHeatmap(
     const perDay = new Map<number, { reviews: number; retained: number }>();
 
     for (const row of historyRows) {
+        const reviewKind = asFiniteInteger(row.reviewKind);
+        if (
+            reviewKind === REVLOG_REVIEW_KIND.Manual ||
+            reviewKind === REVLOG_REVIEW_KIND.Rescheduled
+        ) {
+            continue;
+        }
+
         const timestamp = asFiniteNumber(row.timestampMs);
         const day = Math.floor(timestamp / DAY_MS);
 
@@ -615,21 +945,89 @@ function buildRetentionSeries(heatmap: readonly DailyReviewPoint[]): RetentionPo
     }));
 }
 
-function buildHourlyDistribution(historyRows: readonly RevlogHistoryRow[]): HourDistributionPoint[] {
-    const counts = Array.from({ length: 24 }, () => 0);
+function buildHourlyBreakdown(
+    historyRows: readonly RevlogHistoryRow[],
+    nextDayStartMs: number,
+    now: Date,
+): HourlyBreakdown {
+    const oneMonth = createMutableHourlyBreakdownPoints();
+    const threeMonths = createMutableHourlyBreakdownPoints();
+    const oneYear = createMutableHourlyBreakdownPoints();
+    const allTime = createMutableHourlyBreakdownPoints();
+
+    const oneMonthCutoffSec = Math.trunc((nextDayStartMs - 30 * DAY_MS) / 1000);
+    const threeMonthsCutoffSec = Math.trunc((nextDayStartMs - 90 * DAY_MS) / 1000);
+    const oneYearCutoffSec = Math.trunc((nextDayStartMs - 365 * DAY_MS) / 1000);
+    const localOffsetSecs = -now.getTimezoneOffset() * 60;
 
     for (const row of historyRows) {
-        const timestamp = asFiniteNumber(row.timestampMs);
-        const hour = new Date(timestamp).getHours();
-        if (hour >= 0 && hour < 24) {
-            counts[hour] += 1;
+        const reviewKind = asFiniteInteger(row.reviewKind);
+        if (
+            reviewKind === REVLOG_REVIEW_KIND.Filtered ||
+            reviewKind === REVLOG_REVIEW_KIND.Manual ||
+            reviewKind === REVLOG_REVIEW_KIND.Rescheduled
+        ) {
+            continue;
         }
+
+        const reviewSecs = Math.trunc(asFiniteNumber(row.timestampMs) / 1000);
+        const hour = toHourOfDayIndex(reviewSecs + localOffsetSecs);
+        const correct = asFiniteInteger(row.ease) > 1;
+
+        incrementHourlyBucket(allTime, hour, correct);
+
+        if (reviewSecs < oneYearCutoffSec) {
+            continue;
+        }
+        incrementHourlyBucket(oneYear, hour, correct);
+
+        if (reviewSecs < threeMonthsCutoffSec) {
+            continue;
+        }
+        incrementHourlyBucket(threeMonths, hour, correct);
+
+        if (reviewSecs < oneMonthCutoffSec) {
+            continue;
+        }
+        incrementHourlyBucket(oneMonth, hour, correct);
     }
 
-    return counts.map((count, hour) => ({
+    return {
+        oneMonth,
+        threeMonths,
+        oneYear,
+        allTime,
+    };
+}
+
+function createMutableHourlyBreakdownPoints(): MutableHourlyBreakdownPoint[] {
+    return Array.from({ length: 24 }, (_, hour) => ({
         hour,
-        count,
+        total: 0,
+        correct: 0,
     }));
+}
+
+function incrementHourlyBucket(
+    bucket: MutableHourlyBreakdownPoint[],
+    hour: number,
+    correct: boolean,
+): void {
+    const point = bucket[hour];
+    if (!point) {
+        return;
+    }
+
+    point.total += 1;
+    if (correct) {
+        point.correct += 1;
+    }
+}
+
+function toHourOfDayIndex(hourSeed: number): number {
+    const base = Math.trunc(hourSeed / 3600);
+    const normalized = base % 24;
+    return normalized >= 0 ? normalized : normalized + 24;
 }
 
 function buildIntervalDistribution(cardRows: readonly CardStatsRow[]): DistributionPoint[] {
@@ -739,7 +1137,8 @@ function buildForecast(
         }
 
         if (queue === 1) {
-            const dueDay = Math.floor(asFiniteNumber(card.due) / DAY_MS);
+            const dueTimestampMs = normalizeEpochTimestampToMs(asFiniteNumber(card.due));
+            const dueDay = Math.floor(dueTimestampMs / DAY_MS);
             const offset = normalizeForecastOffset(dueDay - todayDay);
             if (offset !== null) {
                 points[offset].learning += 1;
@@ -792,7 +1191,7 @@ function buildDeckForecast(
         } else if (queue === 1) {
             entry.learningCards += 1;
 
-            const dueTimestamp = asFiniteNumber(card.due);
+            const dueTimestamp = normalizeEpochTimestampToMs(asFiniteNumber(card.due));
             if (dueTimestamp <= nowMs) {
                 entry.dueToday += 1;
             }
@@ -1038,12 +1437,6 @@ function asFiniteNumber(value: unknown): number {
         return value;
     }
     return 0;
-}
-
-function startOfDayMs(value: Date): number {
-    const day = new Date(value.getTime());
-    day.setHours(0, 0, 0, 0);
-    return day.getTime();
 }
 
 function formatDay(dayNumber: number): string {
