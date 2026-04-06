@@ -1,5 +1,23 @@
 import type { NextConfig } from "next";
-import withPWAInit from "next-pwa";
+// next-pwa ships without complete TS declarations for config-time imports.
+// Using require() keeps next.config.ts type-safe enough for runtime without polluting app types.
+const withPWAInit = require("next-pwa");
+const defaultRuntimeCaching = require("next-pwa/cache.js");
+
+const runtimeCaching = [
+    {
+        urlPattern: /\.(?:wasm)$/i,
+        handler: "CacheFirst",
+        options: {
+            cacheName: "static-wasm-assets",
+            expiration: {
+                maxEntries: 16,
+                maxAgeSeconds: 7 * 24 * 60 * 60,
+            },
+        },
+    },
+    ...defaultRuntimeCaching,
+];
 
 const withPWA =
     process.env.NODE_ENV === "development"
@@ -9,6 +27,11 @@ const withPWA =
             register: true,
             skipWaiting: true,
             buildExcludes: [/middleware-manifest\.json$/],
+            runtimeCaching,
+            cacheOnFrontEndNav: true,
+            fallbacks: {
+                document: "/_offline",
+            },
         });
 
 const nextConfig: NextConfig = {

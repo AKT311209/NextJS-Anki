@@ -24,6 +24,33 @@ export interface UseCollectionResult {
 }
 
 let sharedManagerPromise: Promise<CollectionDatabaseManager> | null = null;
+const durabilityBoundManagers = new WeakSet<CollectionDatabaseManager>();
+
+function bindCollectionDurabilityHandlers(manager: CollectionDatabaseManager): void {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+        return;
+    }
+
+    if (durabilityBoundManagers.has(manager)) {
+        return;
+    }
+
+    const flushCollection = () => {
+        void manager.saveNow();
+    };
+
+    const onVisibilityChange = () => {
+        if (document.visibilityState === "hidden") {
+            flushCollection();
+        }
+    };
+
+    window.addEventListener("pagehide", flushCollection);
+    window.addEventListener("beforeunload", flushCollection);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    durabilityBoundManagers.add(manager);
+}
 
 async function getSharedManager(
     options: CollectionDatabaseManagerOptions | undefined,
@@ -68,6 +95,8 @@ export function useCollection(options: UseCollectionOptions = {}): UseCollection
             if (options.managerOverride) {
                 await nextManager.initialize();
             }
+
+            bindCollectionDurabilityHandlers(nextManager);
 
             const nextConnection = await nextManager.getConnection(connectionId);
 

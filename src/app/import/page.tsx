@@ -9,6 +9,7 @@ import {
     triggerApkgDownload,
     type ApkgExportSummary,
 } from "@/lib/import-export/apkg-writer";
+import { markBackupCompleted } from "@/lib/offline/backup-reminder";
 import {
     importParsedApkg,
     type ApkgImportSummary,
@@ -333,6 +334,11 @@ export default function ImportPage() {
             });
 
             triggerApkgDownload(result);
+
+            if (exportDeckSelection === null) {
+                markBackupCompleted();
+            }
+
             setExportSummary({
                 fileName: result.fileName,
                 stats: result.summary,
