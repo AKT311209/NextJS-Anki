@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ThemeMode = "light" | "dark";
 export type FontSizeOption = "small" | "medium" | "large" | "x-large";
 export type FontFamilyOption = "system" | "inter" | "georgia" | "monospace";
 
@@ -22,10 +21,8 @@ export const FONT_FAMILY_MAP: Record<FontFamilyOption, string> = {
 };
 
 type SettingsStore = {
-    readonly themeMode: ThemeMode;
     readonly fontSize: FontSizeOption;
     readonly fontFamily: FontFamilyOption;
-    readonly setThemeMode: (mode: ThemeMode) => void;
     readonly setFontSize: (size: FontSizeOption) => void;
     readonly setFontFamily: (family: FontFamilyOption) => void;
 };
@@ -33,10 +30,8 @@ type SettingsStore = {
 export const useSettingsStore = create<SettingsStore>()(
     persist(
         (set) => ({
-            themeMode: "dark",
             fontSize: "medium",
             fontFamily: "system",
-            setThemeMode: (themeMode) => set({ themeMode }),
             setFontSize: (fontSize) => set({ fontSize }),
             setFontFamily: (fontFamily) => set({ fontFamily }),
         }),

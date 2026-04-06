@@ -20,10 +20,9 @@ import {
     FONT_SIZE_MAP,
     type FontSizeOption,
     type FontFamilyOption,
-    type ThemeMode,
 } from "@/stores/settings-store";
 
-const THEME_OPTIONS: ReadonlyArray<{ readonly value: ThemeMode; readonly label: string }> = [
+const THEME_OPTIONS: ReadonlyArray<{ readonly value: "light" | "dark"; readonly label: string }> = [
     { value: "dark", label: "Dark" },
     { value: "light", label: "Light" },
 ];
@@ -60,7 +59,6 @@ export default function SettingsPage() {
     const fontFamily = useSettingsStore((s) => s.fontFamily);
     const setFontSize = useSettingsStore((s) => s.setFontSize);
     const setFontFamily = useSettingsStore((s) => s.setFontFamily);
-    const setThemeMode = useSettingsStore((s) => s.setThemeMode);
 
     const [backupBusy, setBackupBusy] = useState(false);
     const [backupError, setBackupError] = useState<string | null>(null);
@@ -156,7 +154,6 @@ export default function SettingsPage() {
                             type="button"
                             onClick={() => {
                                 setTheme(option.value);
-                                setThemeMode(option.value);
                             }}
                             className={`rounded-md border px-4 py-2 text-sm font-medium transition ${resolvedTheme === option.value
                                     ? "border-sky-700/60 bg-sky-500/10 text-sky-300"
