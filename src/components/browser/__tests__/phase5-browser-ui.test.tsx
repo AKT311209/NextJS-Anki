@@ -4,6 +4,20 @@ import { describe, expect, it, vi } from "vitest";
 import { CardTable } from "@/components/browser/CardTable";
 import { SearchBar } from "@/components/browser/SearchBar";
 
+const EMPTY_FILTERS = {
+    deckIds: [],
+    notetypeIds: [],
+    tags: [],
+    states: [],
+    flags: [],
+} as const;
+
+const EMPTY_FACETS = {
+    decks: [],
+    notetypes: [],
+    tags: [],
+} as const;
+
 describe("Phase 5 browser UI", () => {
     it("submits query from search bar", async () => {
         const user = userEvent.setup();
@@ -11,7 +25,20 @@ describe("Phase 5 browser UI", () => {
         const onSubmit = vi.fn();
 
         render(
-            <SearchBar query="" loading={false} onQueryChange={onQueryChange} onSubmit={onSubmit} />,
+            <SearchBar
+                query=""
+                loading={false}
+                filters={EMPTY_FILTERS}
+                facets={EMPTY_FACETS}
+                onQueryChange={onQueryChange}
+                onDeckFiltersChange={vi.fn()}
+                onNotetypeFiltersChange={vi.fn()}
+                onTagFiltersChange={vi.fn()}
+                onStateFiltersChange={vi.fn()}
+                onFlagFiltersChange={vi.fn()}
+                onClearFilters={vi.fn()}
+                onSubmit={onSubmit}
+            />,
         );
 
         const input = screen.getByPlaceholderText(/search cards/i);
@@ -20,6 +47,57 @@ describe("Phase 5 browser UI", () => {
 
         expect(onQueryChange).toHaveBeenCalled();
         expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("supports multi-select faceted filters", async () => {
+        const user = userEvent.setup();
+        const onDeckFiltersChange = vi.fn();
+        const onNotetypeFiltersChange = vi.fn();
+        const onTagFiltersChange = vi.fn();
+        const onStateFiltersChange = vi.fn();
+        const onFlagFiltersChange = vi.fn();
+        const onClearFilters = vi.fn();
+
+        render(
+            <SearchBar
+                query=""
+                loading={false}
+                filters={{
+                    deckIds: [1],
+                    notetypeIds: [],
+                    tags: [],
+                    states: [],
+                    flags: [],
+                }}
+                facets={{
+                    decks: [{ id: 1, name: "Default" }],
+                    notetypes: [{ id: 10, name: "Basic" }],
+                    tags: [{ name: "geo", count: 5 }],
+                }}
+                onQueryChange={vi.fn()}
+                onDeckFiltersChange={onDeckFiltersChange}
+                onNotetypeFiltersChange={onNotetypeFiltersChange}
+                onTagFiltersChange={onTagFiltersChange}
+                onStateFiltersChange={onStateFiltersChange}
+                onFlagFiltersChange={onFlagFiltersChange}
+                onClearFilters={onClearFilters}
+                onSubmit={vi.fn()}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: /^Due$/i }));
+        await user.click(screen.getByRole("button", { name: /Flag 2/i }));
+        await user.click(screen.getByLabelText("Default"));
+        await user.click(screen.getByLabelText("Basic"));
+        await user.click(screen.getByRole("button", { name: /geo/i }));
+        await user.click(screen.getByRole("button", { name: /clear filters/i }));
+
+        expect(onStateFiltersChange).toHaveBeenCalledWith(["due"]);
+        expect(onFlagFiltersChange).toHaveBeenCalledWith([2]);
+        expect(onDeckFiltersChange).toHaveBeenCalledWith([]);
+        expect(onNotetypeFiltersChange).toHaveBeenCalledWith([10]);
+        expect(onTagFiltersChange).toHaveBeenCalledWith(["geo"]);
+        expect(onClearFilters).toHaveBeenCalledTimes(1);
     });
 
     it("supports selecting rows and sorting columns", async () => {

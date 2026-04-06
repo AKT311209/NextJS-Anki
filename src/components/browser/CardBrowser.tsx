@@ -21,6 +21,7 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
     const [moveDeckId, setMoveDeckId] = useState<number | null>(null);
     const [flagValue, setFlagValue] = useState(1);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [pageSizeInput, setPageSizeInput] = useState(() => String(search.pageSize));
 
     const availableIds = useMemo(
         () => new Set(search.results.map((result) => result.id)),
@@ -53,6 +54,8 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
 
     const selectedCount = actionableSelectedIds.length;
     const pageCount = Math.max(1, Math.ceil(search.total / search.pageSize));
+    const pageStart = search.total === 0 ? 0 : (search.page - 1) * search.pageSize + 1;
+    const pageEnd = search.total === 0 ? 0 : Math.min(search.total, search.page * search.pageSize);
 
     return (
         <main className="mx-auto flex min-h-screen w-full max-w-[110rem] flex-col gap-4 px-4 py-8 sm:px-6">
@@ -69,7 +72,15 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
             <SearchBar
                 query={search.query}
                 loading={search.loading}
+                filters={search.filters}
+                facets={search.facets}
                 onQueryChange={search.setQuery}
+                onDeckFiltersChange={search.setDeckFilters}
+                onNotetypeFiltersChange={search.setNotetypeFilters}
+                onTagFiltersChange={search.setTagFilters}
+                onStateFiltersChange={search.setStateFilters}
+                onFlagFiltersChange={search.setFlagFilters}
+                onClearFilters={search.clearFilters}
                 onSubmit={() => {
                     void search.reload();
                 }}
@@ -270,10 +281,64 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
                         onOpenCard={setFocusedCardId}
                     />
 
-                    <footer className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-300">
-                        <span>
-                            Page {search.page} of {pageCount}
-                        </span>
+                    <footer className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-300">
+                        <div className="space-y-1">
+                            <span>
+                                Page {search.page} of {pageCount}
+                            </span>
+                            <p className="text-xs text-slate-400">
+                                Showing {pageStart}-{pageEnd} of {search.total}
+                            </p>
+                        </div>
+
+                        <div className="ml-auto flex items-center gap-2 text-xs">
+                            <label htmlFor="browse-page-size" className="text-slate-400">
+                                Items / page
+                            </label>
+                            <input
+                                id="browse-page-size"
+                                type="number"
+                                min={10}
+                                max={500}
+                                value={pageSizeInput}
+                                onChange={(event) => setPageSizeInput(event.currentTarget.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key !== "Enter") {
+                                        return;
+                                    }
+
+                                    event.preventDefault();
+                                    const parsed = Number.parseInt(pageSizeInput, 10);
+                                    if (!Number.isFinite(parsed)) {
+                                        setPageSizeInput(String(search.pageSize));
+                                        return;
+                                    }
+
+                                    const normalizedPageSize = normalizePageSize(parsed);
+                                    search.setPageSize(normalizedPageSize);
+                                    setPageSizeInput(String(normalizedPageSize));
+                                }}
+                                className="w-20 rounded border border-slate-700 bg-slate-950/70 px-2 py-1 text-xs text-slate-100"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const parsed = Number.parseInt(pageSizeInput, 10);
+                                    if (!Number.isFinite(parsed)) {
+                                        setPageSizeInput(String(search.pageSize));
+                                        return;
+                                    }
+
+                                    const normalizedPageSize = normalizePageSize(parsed);
+                                    search.setPageSize(normalizedPageSize);
+                                    setPageSizeInput(String(normalizedPageSize));
+                                }}
+                                className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-200 transition hover:bg-slate-800"
+                            >
+                                Apply
+                            </button>
+                        </div>
+
                         <div className="flex gap-2">
                             <button
                                 type="button"
@@ -389,4 +454,17 @@ function Info({ label, value }: { readonly label: string; readonly value: string
             </dd>
         </>
     );
+}
+
+function normalizePageSize(value: number): number {
+    const rounded = Math.trunc(value);
+    if (rounded < 10) {
+        return 10;
+    }
+
+    if (rounded > 500) {
+        return 500;
+    }
+
+    return rounded;
 }

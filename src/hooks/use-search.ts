@@ -12,9 +12,40 @@ import { splitFields } from "@/lib/types/note";
 
 export type SearchSortField = "due" | "deck" | "reps" | "interval" | "modified";
 
+export type SearchStateFilter = "due" | "new" | "learning" | "review" | "suspended" | "buried" | "flagged" | "leech";
+
 export interface SearchSort {
     readonly field: SearchSortField;
     readonly direction: "asc" | "desc";
+}
+
+export interface SearchDeckFacet {
+    readonly id: number;
+    readonly name: string;
+}
+
+export interface SearchNotetypeFacet {
+    readonly id: number;
+    readonly name: string;
+}
+
+export interface SearchTagFacet {
+    readonly name: string;
+    readonly count: number;
+}
+
+export interface SearchFacets {
+    readonly decks: readonly SearchDeckFacet[];
+    readonly notetypes: readonly SearchNotetypeFacet[];
+    readonly tags: readonly SearchTagFacet[];
+}
+
+export interface SearchFilters {
+    readonly deckIds: readonly number[];
+    readonly notetypeIds: readonly number[];
+    readonly tags: readonly string[];
+    readonly states: readonly SearchStateFilter[];
+    readonly flags: readonly number[];
 }
 
 export type BrowserBulkAction = "suspend" | "bury" | "delete" | "move" | "flag";
@@ -57,7 +88,16 @@ export interface UseSearchResult {
     readonly total: number;
     readonly page: number;
     readonly pageSize: number;
+    readonly setPageSize: (pageSize: number) => void;
     readonly sort: SearchSort;
+    readonly filters: SearchFilters;
+    readonly facets: SearchFacets;
+    readonly setDeckFilters: (deckIds: readonly number[]) => void;
+    readonly setNotetypeFilters: (notetypeIds: readonly number[]) => void;
+    readonly setTagFilters: (tags: readonly string[]) => void;
+    readonly setStateFilters: (states: readonly SearchStateFilter[]) => void;
+    readonly setFlagFilters: (flags: readonly number[]) => void;
+    readonly clearFilters: () => void;
     readonly setPage: (page: number) => void;
     readonly setSort: (sort: SearchSort) => void;
     readonly reload: () => Promise<void>;
@@ -87,7 +127,30 @@ interface CountRow {
     readonly total: number;
 }
 
+interface TagQueryRow {
+    readonly tags: string;
+}
+
+interface SqlFragment {
+    readonly whereSql: string;
+    readonly params: readonly (string | number)[];
+}
+
 const DEFAULT_PAGE_SIZE = 50;
+const MIN_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 500;
+const TAG_FACET_SOURCE_LIMIT = 5000;
+const TAG_FACET_RESULT_LIMIT = 60;
+const VALID_STATE_FILTERS: readonly SearchStateFilter[] = [
+    "due",
+    "new",
+    "learning",
+    "review",
+    "suspended",
+    "buried",
+    "flagged",
+    "leech",
+];
 
 export function useSearch(initialQuery = ""): UseSearchResult {
     const collection = useCollection();
@@ -98,7 +161,13 @@ export function useSearch(initialQuery = ""): UseSearchResult {
     const [results, setResults] = useState<SearchCardResult[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
-    const [pageSize] = useState(DEFAULT_PAGE_SIZE);
+    const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE);
+    const [filters, setFilters] = useState<SearchFilters>(() => createEmptySearchFilters());
+    const [facets, setFacets] = useState<SearchFacets>({
+        decks: [],
+        notetypes: [],
+        tags: [],
+    });
     const [sort, setSort] = useState<SearchSort>({
         field: "due",
         direction: "asc",
@@ -107,6 +176,56 @@ export function useSearch(initialQuery = ""): UseSearchResult {
     const setQuery = useCallback((nextQuery: string) => {
         setPage(1);
         setQueryState(nextQuery);
+    }, []);
+
+    const setPageSize = useCallback((nextPageSize: number) => {
+        setPage(1);
+        setPageSizeState(normalizePageSize(nextPageSize));
+    }, []);
+
+    const setDeckFilters = useCallback((deckIds: readonly number[]) => {
+        setPage(1);
+        setFilters((current) => ({
+            ...current,
+            deckIds: normalizeNumericFilters(deckIds),
+        }));
+    }, []);
+
+    const setNotetypeFilters = useCallback((notetypeIds: readonly number[]) => {
+        setPage(1);
+        setFilters((current) => ({
+            ...current,
+            notetypeIds: normalizeNumericFilters(notetypeIds),
+        }));
+    }, []);
+
+    const setTagFilters = useCallback((tags: readonly string[]) => {
+        setPage(1);
+        setFilters((current) => ({
+            ...current,
+            tags: normalizeStringFilters(tags),
+        }));
+    }, []);
+
+    const setStateFilters = useCallback((states: readonly SearchStateFilter[]) => {
+        setPage(1);
+        setFilters((current) => ({
+            ...current,
+            states: normalizeStateFilters(states),
+        }));
+    }, []);
+
+    const setFlagFilters = useCallback((flags: readonly number[]) => {
+        setPage(1);
+        setFilters((current) => ({
+            ...current,
+            flags: normalizeNumericFilters(flags).filter((flag) => flag >= 0 && flag <= 7),
+        }));
+    }, []);
+
+    const clearFilters = useCallback(() => {
+        setPage(1);
+        setFilters(createEmptySearchFilters());
     }, []);
 
     const executeSearch = useCallback(async () => {
@@ -124,7 +243,31 @@ export function useSearch(initialQuery = ""): UseSearchResult {
             const decks = new DecksRepository(connection);
             const notetypes = new NotetypesRepository(connection);
 
-            const [deckList, notetypeList] = await Promise.all([decks.list(), notetypes.list()]);
+            const [deckList, notetypeList, tagRows] = await Promise.all([
+                decks.list(),
+                notetypes.list(),
+                connection.select<TagQueryRow>(
+                    `
+                    SELECT tags
+                    FROM notes
+                    WHERE TRIM(tags) <> ''
+                    LIMIT ?
+                    `,
+                    [TAG_FACET_SOURCE_LIMIT],
+                ),
+            ]);
+
+            setFacets({
+                decks: deckList.map((deck) => ({
+                    id: deck.id,
+                    name: deck.name,
+                })),
+                notetypes: notetypeList.map((notetype) => ({
+                    id: notetype.id,
+                    name: notetype.name,
+                })),
+                tags: buildTagFacets(tagRows),
+            });
 
             const deckNameById = new Map(deckList.map((deck) => [deck.id, deck.name]));
             const notetypeById = new Map(notetypeList.map((notetype) => [notetype.id, notetype]));
@@ -151,20 +294,29 @@ export function useSearch(initialQuery = ""): UseSearchResult {
 
             const ast = parseSearchQuery(query);
             const built = buildSearchSql(ast, context);
+            const filterSql = buildSearchFilterSql(filters, context.now ?? new Date());
             const orderBy = resolveOrderBy(sort);
+            const whereSql = combineWhereClauses(built.whereSql, filterSql.whereSql);
+            const whereParams = [...built.params, ...filterSql.params];
 
             const countRow = await connection.get<CountRow>(
                 `
                 SELECT COUNT(*) AS total
                 FROM cards c
                 INNER JOIN notes n ON n.id = c.nid
-                WHERE ${built.whereSql}
+                WHERE ${whereSql}
                 `,
-                [...built.params],
+                whereParams,
             );
 
-            const safePage = Math.max(1, page);
+            const totalCount = Number(countRow?.total ?? 0);
+            const maxPage = Math.max(1, Math.ceil(totalCount / pageSize));
+            const safePage = Math.min(Math.max(1, page), maxPage);
             const offset = (safePage - 1) * pageSize;
+
+            if (safePage !== page) {
+                setPage(safePage);
+            }
 
             const rows = await connection.select<SearchQueryRow>(
                 `
@@ -187,11 +339,11 @@ export function useSearch(initialQuery = ""): UseSearchResult {
                     n.mid AS noteMid
                 FROM cards c
                 INNER JOIN notes n ON n.id = c.nid
-                WHERE ${built.whereSql}
+                WHERE ${whereSql}
                 ORDER BY ${orderBy}
                 LIMIT ? OFFSET ?
                 `,
-                [...built.params, pageSize, offset],
+                [...whereParams, pageSize, offset],
             );
 
             const mapped = rows.map((row) => {
@@ -227,14 +379,14 @@ export function useSearch(initialQuery = ""): UseSearchResult {
             });
 
             setResults(mapped);
-            setTotal(Number(countRow?.total ?? 0));
+            setTotal(totalCount);
         } catch (cause) {
             const message = cause instanceof Error ? cause.message : "Search failed.";
             setError(message);
         } finally {
             setLoading(false);
         }
-    }, [collection.connection, collection.ready, page, pageSize, query, sort]);
+    }, [collection.connection, collection.ready, filters, page, pageSize, query, sort]);
 
     const applyBulkAction = useCallback(
         async (request: BulkActionRequest) => {
@@ -309,12 +461,258 @@ export function useSearch(initialQuery = ""): UseSearchResult {
         total,
         page,
         pageSize,
+        setPageSize,
         sort,
+        filters,
+        facets,
+        setDeckFilters,
+        setNotetypeFilters,
+        setTagFilters,
+        setStateFilters,
+        setFlagFilters,
+        clearFilters,
         setPage,
         setSort,
         reload: executeSearch,
         applyBulkAction,
     };
+}
+
+function createEmptySearchFilters(): SearchFilters {
+    return {
+        deckIds: [],
+        notetypeIds: [],
+        tags: [],
+        states: [],
+        flags: [],
+    };
+}
+
+function normalizePageSize(value: number): number {
+    if (!Number.isFinite(value)) {
+        return DEFAULT_PAGE_SIZE;
+    }
+
+    const rounded = Math.trunc(value);
+    if (rounded < MIN_PAGE_SIZE) {
+        return MIN_PAGE_SIZE;
+    }
+
+    if (rounded > MAX_PAGE_SIZE) {
+        return MAX_PAGE_SIZE;
+    }
+
+    return rounded;
+}
+
+function normalizeNumericFilters(values: readonly number[]): number[] {
+    const unique = new Set<number>();
+    for (const value of values) {
+        if (!Number.isFinite(value)) {
+            continue;
+        }
+
+        unique.add(Math.trunc(value));
+    }
+
+    return [...unique].sort((left, right) => left - right);
+}
+
+function normalizeStringFilters(values: readonly string[]): string[] {
+    const unique = new Set<string>();
+    for (const value of values) {
+        const normalized = value.trim();
+        if (normalized.length > 0) {
+            unique.add(normalized);
+        }
+    }
+
+    return [...unique].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeStateFilters(values: readonly SearchStateFilter[]): SearchStateFilter[] {
+    const unique = new Set<SearchStateFilter>();
+    for (const value of values) {
+        if (VALID_STATE_FILTERS.includes(value)) {
+            unique.add(value);
+        }
+    }
+
+    return [...unique];
+}
+
+function buildTagFacets(rows: readonly TagQueryRow[]): SearchTagFacet[] {
+    const counts = new Map<string, number>();
+
+    for (const row of rows) {
+        const raw = row.tags.trim();
+        if (raw.length === 0) {
+            continue;
+        }
+
+        for (const tag of raw.split(" ")) {
+            const normalized = tag.trim();
+            if (normalized.length === 0) {
+                continue;
+            }
+
+            counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+        }
+    }
+
+    return [...counts.entries()]
+        .sort((left, right) => {
+            if (right[1] !== left[1]) {
+                return right[1] - left[1];
+            }
+
+            return left[0].localeCompare(right[0]);
+        })
+        .slice(0, TAG_FACET_RESULT_LIMIT)
+        .map(([name, count]) => ({
+            name,
+            count,
+        }));
+}
+
+function buildSearchFilterSql(filters: SearchFilters, now: Date): SqlFragment {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+
+    const deckIds = normalizeNumericFilters(filters.deckIds);
+    if (deckIds.length > 0) {
+        const fragment = buildInSql("c.did", deckIds);
+        clauses.push(fragment.whereSql);
+        params.push(...fragment.params);
+    }
+
+    const notetypeIds = normalizeNumericFilters(filters.notetypeIds);
+    if (notetypeIds.length > 0) {
+        const fragment = buildInSql("n.mid", notetypeIds);
+        clauses.push(fragment.whereSql);
+        params.push(...fragment.params);
+    }
+
+    const tags = normalizeStringFilters(filters.tags);
+    if (tags.length > 0) {
+        clauses.push(`(${tags.map(() => "n.tags LIKE ? ESCAPE '\\\\'").join(" OR ")})`);
+        params.push(...tags.map((tag) => `% ${escapeLikeSql(tag)} %`));
+    }
+
+    const states = normalizeStateFilters(filters.states);
+    if (states.length > 0) {
+        const fragments = states.map((state) => buildStateSql(state, now));
+        clauses.push(`(${fragments.map((fragment) => `(${fragment.whereSql})`).join(" OR ")})`);
+        params.push(...fragments.flatMap((fragment) => fragment.params));
+    }
+
+    const flags = normalizeNumericFilters(filters.flags).filter((flag) => flag >= 0 && flag <= 7);
+    if (flags.length > 0) {
+        const fragment = buildInSql("(c.flags & 7)", flags);
+        clauses.push(fragment.whereSql);
+        params.push(...fragment.params);
+    }
+
+    if (clauses.length === 0) {
+        return {
+            whereSql: "1 = 1",
+            params: [],
+        };
+    }
+
+    return {
+        whereSql: clauses.map((clause) => `(${clause})`).join(" AND "),
+        params,
+    };
+}
+
+function buildStateSql(state: SearchStateFilter, now: Date): SqlFragment {
+    const nowMs = now.getTime();
+    const today = Math.floor(nowMs / 86_400_000);
+
+    if (state === "due") {
+        return {
+            whereSql: "((c.queue = 1 AND c.due <= ?) OR (c.queue IN (2, 3) AND c.due <= ?))",
+            params: [nowMs, today],
+        };
+    }
+
+    if (state === "new") {
+        return {
+            whereSql: "c.queue = 0",
+            params: [],
+        };
+    }
+
+    if (state === "learning") {
+        return {
+            whereSql: "c.queue IN (1, 3)",
+            params: [],
+        };
+    }
+
+    if (state === "review") {
+        return {
+            whereSql: "c.queue = 2",
+            params: [],
+        };
+    }
+
+    if (state === "suspended") {
+        return {
+            whereSql: "c.queue = -1",
+            params: [],
+        };
+    }
+
+    if (state === "buried") {
+        return {
+            whereSql: "c.queue IN (-2, -3)",
+            params: [],
+        };
+    }
+
+    if (state === "flagged") {
+        return {
+            whereSql: "(c.flags & 7) > 0",
+            params: [],
+        };
+    }
+
+    return {
+        whereSql: "(c.flags & 128) != 0",
+        params: [],
+    };
+}
+
+function buildInSql(column: string, values: readonly number[]): SqlFragment {
+    if (values.length === 0) {
+        return {
+            whereSql: "1 = 1",
+            params: [],
+        };
+    }
+
+    return {
+        whereSql: `${column} IN (${values.map(() => "?").join(", ")})`,
+        params: values,
+    };
+}
+
+function combineWhereClauses(base: string, extra: string): string {
+    if (extra === "1 = 1") {
+        return base;
+    }
+
+    if (base === "1 = 1") {
+        return extra;
+    }
+
+    return `(${base}) AND (${extra})`;
+}
+
+function escapeLikeSql(value: string): string {
+    return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
 function resolveOrderBy(sort: SearchSort): string {
