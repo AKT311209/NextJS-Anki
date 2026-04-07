@@ -398,7 +398,7 @@ export function CardBrowser({ initialQuery = "" }: CardBrowserProps) {
                                 <Info label="Interval" value={formatBrowserIntervalValue(focusedCard)} />
                                 <Info label="Reps" value={focusedCard.reps} />
                                 <Info label="Lapses" value={focusedCard.lapses} />
-                                <Info label="Factor" value={focusedCard.factor} />
+                                <Info label="Difficulty" value={formatDifficultyValue(focusedCard.difficulty)} />
                                 <Info label="Flags" value={focusedCard.flags} />
                             </dl>
                         ) : (
@@ -467,4 +467,12 @@ function normalizePageSize(value: number): number {
     }
 
     return rounded;
+}
+
+function formatDifficultyValue(difficulty: number | null): string {
+    if (difficulty === null) {
+        return "—";
+    }
+
+    return `${difficulty}%`;
 }

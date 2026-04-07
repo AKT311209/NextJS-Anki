@@ -76,6 +76,24 @@ describe("Phase 4 review UI", () => {
         expect(screen.getByText("Review")).toBeInTheDocument();
     });
 
+    it("emphasizes the queue bucket for the current card", () => {
+        render(
+            <ReviewProgress
+                counts={{
+                    learning: 0,
+                    review: 5,
+                    new: 20,
+                }}
+                activeCategory="review"
+            />,
+        );
+
+        expect(screen.getByTestId("review-progress-review")).toHaveAttribute("data-active", "true");
+        expect(screen.getByTestId("review-progress-review")).toHaveClass("border-emerald-500/60");
+        expect(screen.getByTestId("review-progress-learning")).toHaveAttribute("data-active", "false");
+        expect(screen.getByTestId("review-progress-new")).toHaveAttribute("data-active", "false");
+    });
+
     it("converts [sound:...] tags into audio players in shadow DOM", () => {
         const { container } = render(
             <CardHtml

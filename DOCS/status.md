@@ -1131,3 +1131,43 @@
 	- `npx eslint src/hooks/use-stats.ts src/app/stats/page.tsx src/components/stats/ReviewHoursCard.tsx src/hooks/__tests__/phase7-stats.test.ts --max-warnings=0` ✅
 	- `npm run typecheck` ✅
 
+## 2026-04-07
+
+- Added Anki-style active queue emphasis for the review progress counters (`Learning`, `Review`, `New`).
+	- `src/components/review/ReviewProgress.tsx`
+		- Added `activeCategory` prop (`learning | review | new | null`) and queue-category type export.
+		- Added per-category active highlight styles so the current card’s bucket is visually emphasized.
+		- Added stable data attributes/test IDs for queue-bucket state assertions.
+	- `src/app/review/[deckId]/page.tsx`
+		- Wired current-card queue to the progress component using `resolveReviewQueueCategory()`.
+		- Mapped `CardQueue.Learning`, `CardQueue.DayLearning`, and `CardQueue.Preview` to `Learning`, `CardQueue.Review` to `Review`, and `CardQueue.New` to `New`.
+	- `src/components/review/__tests__/phase4-review-ui.test.tsx`
+		- Added regression test: `emphasizes the queue bucket for the current card`.
+
+- Verification completed:
+	- `npm run test -- src/components/review/__tests__/phase4-review-ui.test.tsx src/stores/__tests__/phase4-review-store.test.ts` ✅
+	- `npm run typecheck` ✅
+
+- Migrated `/stats` from ease-factor distribution to Anki-style FSRS difficulty distribution and updated `/browse` card info to show Difficulty instead of Factor.
+	- `src/hooks/use-stats.ts`
+		- Replaced `easeDistribution` with `difficultyDistribution` in `StatsSnapshot`.
+		- Added `DifficultyDistributionPoint` (`percent`, `count`).
+		- Computed difficulty distribution from card data using `extract_fsrs_variable(c.data, 'd')`, normalized to percent with Anki-equivalent formula: `((d - 1) / 9) * 100`.
+		- Binned distribution at 5% intervals (0..100).
+	- `src/components/stats/DifficultyDistributionCard.tsx`
+		- Added a new Difficulty distribution **line graph** card with area fill, axes, point tooltips, and weighted median summary.
+	- `src/app/stats/page.tsx`
+		- Replaced the old `Ease factor distribution` card with `DifficultyDistributionCard`.
+	- `src/hooks/use-search.ts`
+		- Added `difficulty` field to `SearchCardResult`.
+		- Populated it from `extract_fsrs_variable(c.data, 'd')` and normalized to integer percent.
+	- `src/components/browser/CardBrowser.tsx`
+		- Replaced Card info row `Factor` with `Difficulty` (percent, or `—` when unavailable).
+	- Tests updated:
+		- `src/hooks/__tests__/phase7-stats.test.ts` (difficulty distribution assertions + FSRS difficulty fixture data)
+		- `src/components/browser/__tests__/phase5-browser-ui.test.tsx` (fixture type update)
+
+- Verification completed:
+	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts src/components/browser/__tests__/phase5-browser-ui.test.tsx` ✅
+	- `npm run typecheck` ✅
+

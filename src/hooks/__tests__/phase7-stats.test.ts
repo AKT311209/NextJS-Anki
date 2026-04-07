@@ -54,6 +54,7 @@ describe("Phase 7 statistics", () => {
             due: dayNumber,
             ivl: 30,
             factor: 2500,
+            data: '{"scheduler":"fsrs","fsrs":{"difficulty":4.6}}',
         });
 
         await insertNoteAndCard(notes, cards, {
@@ -87,6 +88,7 @@ describe("Phase 7 statistics", () => {
             due: dayNumber + 3,
             ivl: 5,
             factor: 1800,
+            data: '{"scheduler":"fsrs","fsrs":{"difficulty":8.4}}',
         });
 
         await insertNoteAndCard(notes, cards, {
@@ -195,7 +197,7 @@ describe("Phase 7 statistics", () => {
         expect(dayThreeForecast?.review).toBe(1);
 
         expect(snapshot.intervalDistribution.some((entry) => entry.count > 0)).toBe(true);
-        expect(snapshot.easeDistribution.some((entry) => entry.count > 0)).toBe(true);
+        expect(snapshot.difficultyDistribution.some((entry) => entry.count > 0)).toBe(true);
         expect(snapshot.hourlyDistribution).toHaveLength(24);
         expect(snapshot.hourlyBreakdown.oneMonth).toHaveLength(24);
         expect(snapshot.hourlyBreakdown.threeMonths).toHaveLength(24);
@@ -257,6 +259,7 @@ describe("Phase 7 statistics", () => {
             due: Math.floor(now.getTime() / (24 * 60 * 60 * 1000)),
             ivl: 15,
             factor: 2300,
+            data: '{"scheduler":"fsrs","fsrs":{"difficulty":6.1}}',
         });
 
         const snapshot = await computeStatsSnapshot(connection, {
@@ -455,6 +458,7 @@ async function insertNoteAndCard(
         readonly due: number;
         readonly ivl: number;
         readonly factor: number;
+        readonly data?: string;
     },
 ): Promise<void> {
     await notes.create({
@@ -475,6 +479,7 @@ async function insertNoteAndCard(
         due: input.due,
         ivl: input.ivl,
         factor: input.factor,
+        data: input.data,
     });
 }
 

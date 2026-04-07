@@ -122,6 +122,7 @@ describe("Phase 5 browser UI", () => {
                         reps: 0,
                         lapses: 0,
                         factor: 2500,
+                        difficulty: null,
                         flags: 0,
                         mod: Date.now(),
                         deckName: "Default",

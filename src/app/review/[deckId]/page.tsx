@@ -6,8 +6,9 @@ import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
 import { AnswerButtons } from "@/components/review/AnswerButtons";
 import { ReviewCard } from "@/components/review/ReviewCard";
-import { ReviewProgress } from "@/components/review/ReviewProgress";
+import { ReviewProgress, type ReviewQueueCategory } from "@/components/review/ReviewProgress";
 import { ratingShortcutToValue, useReview } from "@/hooks/use-review";
+import { CardQueue } from "@/lib/types/card";
 
 export default function ReviewPage() {
     const params = useParams<{ deckId: string }>();
@@ -322,7 +323,10 @@ export default function ReviewPage() {
                 </p>
             </header>
 
-            <ReviewProgress counts={review.counts} />
+            <ReviewProgress
+                counts={review.counts}
+                activeCategory={resolveReviewQueueCategory(review.currentCard?.card.queue)}
+            />
 
             {review.loading ? (
                 <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-300">
@@ -474,6 +478,22 @@ function replayAudioSources(
     }
 
     return [];
+}
+
+function resolveReviewQueueCategory(queue: number | undefined): ReviewQueueCategory | null {
+    if (queue === CardQueue.New) {
+        return "new";
+    }
+
+    if (queue === CardQueue.Review) {
+        return "review";
+    }
+
+    if (queue === CardQueue.Learning || queue === CardQueue.DayLearning || queue === CardQueue.Preview) {
+        return "learning";
+    }
+
+    return null;
 }
 
 async function playAudioSource(

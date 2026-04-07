@@ -126,6 +126,11 @@ export interface DistributionPoint {
     readonly count: number;
 }
 
+export interface DifficultyDistributionPoint {
+    readonly percent: number;
+    readonly count: number;
+}
+
 export interface HourDistributionPoint {
     readonly hour: number;
     readonly count: number;
@@ -192,7 +197,7 @@ export interface StatsSnapshot {
     readonly retention: readonly RetentionPoint[];
     readonly forecast: readonly ForecastPoint[];
     readonly intervalDistribution: readonly DistributionPoint[];
-    readonly easeDistribution: readonly DistributionPoint[];
+    readonly difficultyDistribution: readonly DifficultyDistributionPoint[];
     readonly maturityBreakdown: readonly DistributionPoint[];
     readonly hourlyBreakdown: HourlyBreakdown;
     readonly hourlyDistribution: readonly HourDistributionPoint[];
@@ -256,6 +261,7 @@ interface CardStatsRow {
     readonly odid: number;
     readonly ivl: number;
     readonly factor: number;
+    readonly fsrsDifficulty: number | null;
 }
 
 interface DeckRetentionRow {
@@ -292,14 +298,7 @@ const INTERVAL_BUCKETS = [
     { label: "365+d", min: 366, max: Number.POSITIVE_INFINITY },
 ] as const;
 
-const EASE_BUCKETS = [
-    { label: "<1300", min: Number.NEGATIVE_INFINITY, max: 1299 },
-    { label: "1300-1699", min: 1300, max: 1699 },
-    { label: "1700-2099", min: 1700, max: 2099 },
-    { label: "2100-2499", min: 2100, max: 2499 },
-    { label: "2500-2899", min: 2500, max: 2899 },
-    { label: "2900+", min: 2900, max: Number.POSITIVE_INFINITY },
-] as const;
+const DIFFICULTY_BIN_PERCENT = 5;
 
 const MATURITY_LABELS = {
     new: "New",
@@ -527,7 +526,16 @@ export async function computeStatsSnapshot(
         ),
         connection.select<CardStatsRow>(
             `
-            SELECT c.did, c.type, c.queue, c.due, c.odue, c.odid, c.ivl, c.factor
+            SELECT
+                c.did,
+                c.type,
+                c.queue,
+                c.due,
+                c.odue,
+                c.odid,
+                c.ivl,
+                c.factor,
+                CAST(((extract_fsrs_variable(c.data, 'd') - 1.0) / 9.0) * 100.0 AS REAL) AS fsrsDifficulty
             FROM cards c
             WHERE ${cardScope.whereSql}
             `,
@@ -597,7 +605,7 @@ export async function computeStatsSnapshot(
         count: point.total,
     }));
     const intervalDistribution = buildIntervalDistribution(cardRows);
-    const easeDistribution = buildEaseDistribution(cardRows);
+    const difficultyDistribution = buildDifficultyDistribution(cardRows);
     const maturityBreakdown = buildMaturityBreakdown(cardRows);
     const forecast = buildForecast(cardRows, nowMs, todayDay);
     const deckForecast = buildDeckForecast(cardRows, deckNameById, nowMs, todayDay);
@@ -630,7 +638,7 @@ export async function computeStatsSnapshot(
         retention,
         forecast,
         intervalDistribution,
-        easeDistribution,
+        difficultyDistribution,
         maturityBreakdown,
         hourlyBreakdown,
         hourlyDistribution,
@@ -1047,21 +1055,28 @@ function buildIntervalDistribution(cardRows: readonly CardStatsRow[]): Distribut
     }));
 }
 
-function buildEaseDistribution(cardRows: readonly CardStatsRow[]): DistributionPoint[] {
-    const counts = Array.from({ length: EASE_BUCKETS.length }, () => 0);
+function buildDifficultyDistribution(cardRows: readonly CardStatsRow[]): DifficultyDistributionPoint[] {
+    const countsByBin = new Map<number, number>();
 
     for (const card of cardRows) {
-        const factor = asFiniteInteger(card.factor);
-        const bucketIndex = findBucketIndex(factor, EASE_BUCKETS);
-        if (bucketIndex >= 0) {
-            counts[bucketIndex] += 1;
+        const difficultyPercentRaw = readNumber(card.fsrsDifficulty);
+        if (difficultyPercentRaw === null) {
+            continue;
         }
+
+        const normalized = Math.max(0, Math.min(100, difficultyPercentRaw));
+        const binned = normalized >= 100
+            ? 100
+            : Math.floor(normalized / DIFFICULTY_BIN_PERCENT) * DIFFICULTY_BIN_PERCENT;
+
+        countsByBin.set(binned, (countsByBin.get(binned) ?? 0) + 1);
     }
 
-    return EASE_BUCKETS.map((bucket, index) => ({
-        label: bucket.label,
-        count: counts[index],
-    }));
+    return Array.from({ length: 100 / DIFFICULTY_BIN_PERCENT + 1 }, (_, index) => index * DIFFICULTY_BIN_PERCENT)
+        .map((percent) => ({
+            percent,
+            count: countsByBin.get(percent) ?? 0,
+        }));
 }
 
 function buildMaturityBreakdown(cardRows: readonly CardStatsRow[]): DistributionPoint[] {

@@ -62,6 +62,7 @@ export interface SearchCardResult {
     readonly reps: number;
     readonly lapses: number;
     readonly factor: number;
+    readonly difficulty: number | null;
     readonly flags: number;
     readonly mod: number;
     readonly deckName: string;
@@ -115,6 +116,7 @@ interface SearchQueryRow {
     readonly due: number;
     readonly ivl: number;
     readonly factor: number;
+    readonly fsrsDifficulty: number | null;
     readonly reps: number;
     readonly lapses: number;
     readonly flags: number;
@@ -331,6 +333,7 @@ export function useSearch(initialQuery = ""): UseSearchResult {
                     c.due,
                     c.ivl,
                     c.factor,
+                    CAST(((extract_fsrs_variable(c.data, 'd') - 1.0) / 9.0) * 100.0 AS REAL) AS fsrsDifficulty,
                     c.reps,
                     c.lapses,
                     c.flags,
@@ -363,6 +366,7 @@ export function useSearch(initialQuery = ""): UseSearchResult {
                     reps: row.reps,
                     lapses: row.lapses,
                     factor: row.factor,
+                    difficulty: normalizeDifficultyPercent(row.fsrsDifficulty),
                     flags: row.flags,
                     mod: row.mod,
                     deckName: deckNameById.get(row.did) ?? `Deck ${row.did}`,
@@ -476,6 +480,15 @@ export function useSearch(initialQuery = ""): UseSearchResult {
         reload: executeSearch,
         applyBulkAction,
     };
+}
+
+function normalizeDifficultyPercent(value: number | null): number | null {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return null;
+    }
+
+    const clamped = Math.max(0, Math.min(100, value));
+    return Math.round(clamped);
 }
 
 function createEmptySearchFilters(): SearchFilters {
