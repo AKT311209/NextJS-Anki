@@ -63,6 +63,13 @@ export function DeckCard({
                 >
                     Options
                 </Link>
+
+                <Link
+                    href={`/deck/${node.deck.id}/custom-study`}
+                    className="rounded-md border border-amber-700/70 bg-amber-500/10 px-2 py-1 text-xs text-amber-100 transition hover:bg-amber-500/20"
+                >
+                    Custom Study
+                </Link>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2 text-xs">

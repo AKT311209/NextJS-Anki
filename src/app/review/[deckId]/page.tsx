@@ -442,6 +442,14 @@ export default function ReviewPage() {
                         >
                             Refresh queue
                         </button>
+                        {deckId !== null ? (
+                            <Link
+                                href={`/deck/${deckId}/custom-study`}
+                                className="rounded-md border border-amber-700/70 bg-amber-500/10 px-3 py-1.5 text-sm text-amber-100 transition hover:bg-amber-500/20"
+                            >
+                                Custom study
+                            </Link>
+                        ) : null}
                         <button
                             type="button"
                             disabled={!review.canUndo}

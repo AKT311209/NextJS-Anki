@@ -143,6 +143,12 @@ export default function DeckDetailPage() {
                         >
                             Deck options
                         </Link>
+                        <Link
+                            href={`/deck/${deck.id}/custom-study`}
+                            className="rounded-xl border border-amber-700/70 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-100 transition hover:bg-amber-500/20"
+                        >
+                            Custom study
+                        </Link>
                     </section>
                 </>
             ) : null}

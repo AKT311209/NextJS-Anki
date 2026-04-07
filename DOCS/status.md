@@ -1268,3 +1268,25 @@ The most impactful gap is the short-term handling — without it, FSRS cards tha
 	- `npm run typecheck` ✅
 	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
 
+- Implemented deck-level **Custom Study** flow (Anki-style session deck behavior) and fixed preview-session re-apply parity.
+	- Added core scheduler service:
+		- `src/lib/scheduler/custom-study.ts`
+		- Supports modes: `new-limit-delta`, `review-limit-delta`, `forgot-days`, `review-ahead-days`, `preview-days`, and `cram`.
+		- Implements "Custom Study Session" filtered-deck create/reuse semantics and move/restore of filtered cards via `did/odid/odue`.
+		- Persists cram include/exclude tag defaults per deck in global config.
+	- Added Custom Study UI route and entry points:
+		- `src/app/deck/[deckId]/custom-study/page.tsx`
+		- Linked from `src/components/deck/DeckCard.tsx`, `src/app/deck/[deckId]/page.tsx`, and `src/app/review/[deckId]/page.tsx`.
+	- Added dedicated tests:
+		- `src/lib/scheduler/__tests__/custom-study.test.ts`
+		- Covers limit extension, preview session creation/reuse, empty-search error, cram tag persistence, and session-name conflict.
+	- Fixed preview mode bug on repeated apply:
+		- Root cause: candidate selection occurred before restoring cards from existing Custom Study Session deck.
+		- Fix: restore cards from existing session deck before candidate selection so re-applying preview mode re-queues matching source-deck cards correctly.
+		- Also applied preview recency cutoff (`days`) via note recency filtering (`n.id`/`n.mod`) in preview candidate query.
+
+- Verification completed:
+	- `npm test -- src/lib/scheduler/__tests__/custom-study.test.ts -t "creates a preview custom study session deck and moves matching cards"` ✅
+	- `npm test -- src/lib/scheduler/__tests__/custom-study.test.ts` ✅
+	- editor/type checks on changed files (`custom-study.ts`, `custom-study.test.ts`) ✅
+
