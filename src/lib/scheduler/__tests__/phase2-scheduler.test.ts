@@ -158,6 +158,95 @@ describe("Phase 2 scheduler domain", () => {
         expect(preview.good.nextCard.ivl).toBeGreaterThanOrEqual(1);
     });
 
+    it("uses starting ease when FSRS learning card graduates to Review", () => {
+        const engine = new SchedulerEngine();
+
+        const learningCard = createCard({
+            id: 10071,
+            nid: 50071,
+            did: 1,
+            ord: 0,
+            type: CardType.Learning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime(),
+            ivl: 0,
+            factor: 1300,
+            reps: 1,
+            lapses: 0,
+            left: 1,
+            data: JSON.stringify({
+                scheduler: "fsrs",
+                fsrs: {
+                    stability: 0.5,
+                    difficulty: 5,
+                    lastReview: FIXED_NOW.getTime() - 10 * 60_000,
+                    elapsedDays: 0,
+                    scheduledDays: 0,
+                },
+            }),
+        });
+
+        const preview = engine.previewCard(
+            learningCard,
+            {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                enableFuzz: false,
+                fsrsShortTermWithSteps: false,
+                learningSteps: ["1m", "10m"],
+                startingEase: 2300,
+                now: FIXED_NOW,
+            },
+            FIXED_NOW,
+        );
+
+        expect(preview.good.nextCard.queue).toBe(CardQueue.Review);
+        expect(preview.good.nextCard.factor).toBe(2300);
+    });
+
+    it("preserves prior ease when FSRS relearning card graduates to Review", () => {
+        const engine = new SchedulerEngine();
+
+        const relearningCard = createCard({
+            id: 10072,
+            nid: 50072,
+            did: 1,
+            ord: 0,
+            type: CardType.Relearning,
+            queue: CardQueue.Learning,
+            due: FIXED_NOW.getTime(),
+            ivl: 4,
+            factor: 1850,
+            reps: 12,
+            lapses: 2,
+            left: 1,
+            data: JSON.stringify({
+                scheduler: "fsrs",
+                fsrs: {
+                    stability: 1.4,
+                    difficulty: 6.2,
+                    lastReview: FIXED_NOW.getTime() - 15 * 60_000,
+                    elapsedDays: 0,
+                    scheduledDays: 1,
+                },
+            }),
+        });
+
+        const preview = engine.previewCard(
+            relearningCard,
+            {
+                ...DEFAULT_SCHEDULER_CONFIG,
+                enableFuzz: false,
+                fsrsShortTermWithSteps: false,
+                relearningSteps: ["10m"],
+                now: FIXED_NOW,
+            },
+            FIXED_NOW,
+        );
+
+        expect(preview.good.nextCard.queue).toBe(CardQueue.Review);
+        expect(preview.good.nextCard.factor).toBe(relearningCard.factor);
+    });
+
     it("uses SM-2 fallback when card requests legacy scheduler", async () => {
         const engine = new SchedulerEngine();
         const config: SchedulerConfig = {
@@ -2377,6 +2466,10 @@ describe("Phase 2 scheduler domain", () => {
 
         expect(supportsShortTerm.good.nextCard.queue).toBe(CardQueue.Learning);
         expect(noShortTermWeightsPreview.good.nextCard.queue).toBe(CardQueue.Review);
+        expect(noShortTermWeightsPreview.easy.nextCard.queue).toBe(CardQueue.Review);
+        expect(noShortTermWeightsPreview.easy.scheduledDays).toBeGreaterThanOrEqual(
+            noShortTermWeightsPreview.good.scheduledDays + 1,
+        );
     });
 });
 

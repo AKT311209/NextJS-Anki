@@ -1044,7 +1044,71 @@
 			- Verified day-rollover unbury behavior against persisted marker state.
 	- Verification completed:
 		- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts src/hooks/__tests__/use-review-rollover.test.ts src/lib/storage/__tests__/phase1-storage.test.ts` ✅ (46/46)
-		- `npm run typecheck` ✅
+		- `npm run typecheck` ✅Comparison: NextJS vs Anki Desktop Graduate Logic
+Architecture Difference
+Anki Desktop uses a state-machine approach with dedicated state types (LearningState, ReviewState, RelearnState) in separate files. The NextJS implementation handles transitions inline within a single engine.ts via resolveLearningFsrsTransition() and resolveRelearningFsrsTransition().
+
+1. Graduation Trigger — Same
+Both use the same mechanism: good_delay_secs() returning None (no more steps) means graduation.
+
+Desktop	NextJS
+Trigger	ctx.steps.good_delay_secs(remaining_steps) → None	remainingStepsForGood() → 0
+Step tracking	remaining_for_good() decrements	Same countdown logic
+2. FSRS Graduation Interval — Different
+This is the most significant divergence.
+
+Desktop (learning.rs:145-151):
+
+
+// Uses FSRS's computed interval directly
+(states.good.interval, /* short_term check */)
+// Then applies fuzz + clamp:
+ctx.with_review_fuzz(interval.round().max(1.0), minimum, maximum)
+NextJS (engine.ts:138-146):
+
+
+// Post-hoc enforcement: if FSRS returns < 1, override entirely
+if (nextQueue === CardQueue.Review && scheduledDays < 1) {
+    scheduledDays = Math.max(config.minimumInterval, config.graduatingInterval);
+}
+Key difference: Desktop applies max(1.0) then fuzzes. NextJS overrides the FSRS value entirely with graduatingInterval if it's below 1 — potentially discarding FSRS's calculated interval (e.g., if FSRS says 0.7 days, Desktop might use 1 with fuzz; NextJS replaces it with graduatingInterval which could differ).
+
+3. FSRS Short-Term Handling — Missing in NextJS
+Desktop has a concept of "short-term" learning:
+
+
+ctx.fsrs_allow_short_term
+    && (ctx.fsrs_short_term_with_steps_enabled || ctx.steps.is_empty())
+    && states.good.interval < 0.5
+When interval < 0.5 days and short-term is enabled, the card stays in LearnState instead of graduating to Review. This prevents premature graduation for FSRS-computed intervals under 12 hours.
+
+NextJS has no short-term concept — any FSRS interval >= 1 graduates to Review, and anything < 1 is forced to graduatingInterval. There's no intermediate state where FSRS wants sub-day but the card isn't ready for full Review.
+
+4. Fuzz — Missing in NextJS
+Desktop applies interval fuzzing (with_review_fuzz) on graduation to spread card due dates. NextJS applies none — graduated intervals are deterministic.
+
+5. Easy Button — Nearly Identical
+Desktop	NextJS
+Behavior	Always graduates immediately	Same
+FSRS interval	states.easy.interval with fuzz + minimum = good + 1	Math.max(1, Math.round(intervalDays))
+SM-2 interval	Fixed graduating_interval_easy (4 days)	Fixed config.easyInterval
+Ease factor	initial_ease_factor (2500)	Not explicitly set on graduation
+Difference: Desktop ensures Easy interval > Good interval (minimum = good + 1). NextJS doesn't enforce this ordering.
+
+6. Relearning Graduation — Similar Structure
+Both mirror the learning graduation logic with relearningSteps instead of learningSteps. No significant functional difference here.
+
+7. remaining_steps Reset — Same
+Both set remaining_steps = 0 on graduation to Review.
+
+Summary of Gaps
+Feature	Desktop	NextJS
+FSRS short-term (< 0.5 day)	Keeps in LearnState	Missing — forced to 1 day
+Interval fuzz	Applied on graduation	Missing
+Easy > Good guarantee	Enforced	Missing
+Ease factor on graduation	Set to initial_ease_factor	Not explicitly set
+State machine architecture	Separate state types	Inline in engine methods
+The most impactful gap is the short-term handling — without it, FSRS cards that need sub-day reinforcement get pushed to Review too early, potentially hurting retention. The missing fuzz causes due-date clustering.
 
 ## 2026-04-06
 
@@ -1170,4 +1234,21 @@
 - Verification completed:
 	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts src/components/browser/__tests__/phase5-browser-ui.test.tsx` ✅
 	- `npm run typecheck` ✅
+
+- Aligned FSRS learning/relearning graduation behavior more closely with Anki Desktop.
+	- `src/lib/scheduler/engine.ts`
+		- Replaced FSRS Review-queue interval normalization with a dedicated Anki-style resolver (`resolveFsrsReviewIntervalDays`) that applies rounding/clamping and deterministic review fuzz from FSRS interval values directly.
+		- Removed the Review graduation floor that depended on `graduatingInterval`; Review interval resolution now consistently derives from FSRS interval + configured minimum/maximum bounds.
+		- Added `enforceFsrsGraduatingEasyOrder()` for `New/Learning/Relearning` previews to enforce Anki’s FSRS Easy minimum of `Good + 1` (when Easy graduates to Review).
+		- Added FSRS ease-factor parity handling on graduation:
+			- Learning/New → Review uses `startingEase`.
+			- Relearning → Review preserves prior card ease factor.
+	- `src/lib/scheduler/__tests__/phase2-scheduler.test.ts`
+		- Added regression tests:
+			- `uses starting ease when FSRS learning card graduates to Review`
+			- `preserves prior ease when FSRS relearning card graduates to Review`
+		- Expanded existing short-term gating test to assert FSRS Easy interval ordering (`Easy >= Good + 1`) in the review-graduation branch.
+
+- Verification completed:
+	- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (38/38)
 

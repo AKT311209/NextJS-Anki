@@ -110,6 +110,19 @@ export class SchedulerEngine {
                     now,
                     config.collectionDayOffset,
                 ));
+            } else if (
+                card.type === CardType.New
+                || card.type === CardType.Learning
+                || card.type === CardType.Relearning
+            ) {
+                easy = enforceFsrsGraduatingEasyOrder(
+                    card,
+                    preview.good.intervalDays,
+                    easy,
+                    config,
+                    now,
+                    config.collectionDayOffset,
+                );
             }
 
             return { again, hard, good, easy };
@@ -135,12 +148,13 @@ export class SchedulerEngine {
         const nextType = transition.nextType;
         let persistedIntervalDays = transition.persistedIntervalDays ?? scheduledDays;
 
-        // Enforce minimum interval for cards graduating to Review.
-        // FSRS can return scheduled_days < 1 (e.g. 0.3),
-        // causing ivl=0 Review cards that never escape and appear immediately
-        // due each queue rebuild.
-        if (nextQueue === CardQueue.Review && scheduledDays < 1) {
-            scheduledDays = Math.max(config.minimumInterval, config.graduatingInterval);
+        if (nextQueue === CardQueue.Review) {
+            scheduledDays = resolveFsrsReviewIntervalDays(
+                intervalDays,
+                previousCard,
+                config,
+                Math.max(1, config.minimumInterval),
+            );
             due = new Date(now.getTime() + scheduledDays * DAY_MS);
             persistedIntervalDays = scheduledDays;
         }
@@ -155,18 +169,6 @@ export class SchedulerEngine {
             if (persistedIntervalDays < 1) {
                 persistedIntervalDays = scheduledDays;
             }
-        }
-
-        if (config.enableFuzz && scheduledDays > 1 && nextQueue === CardQueue.Review) {
-            scheduledDays = fuzzInterval(intervalDays, {
-                cardId: previousCard.id,
-                reps: previousCard.reps,
-                minimum: Math.max(1, config.minimumInterval),
-                maximum: config.maximumInterval,
-            });
-            due = new Date(now.getTime() + scheduledDays * DAY_MS);
-            nextQueue = CardQueue.Review;
-            persistedIntervalDays = scheduledDays;
         }
 
         if (persistedIntervalDays < 0) {
@@ -197,7 +199,7 @@ export class SchedulerEngine {
                 ? due.getTime()
                 : toDayNumber(due, undefined, config.collectionDayOffset),
             ivl: persistedIntervalDays,
-            factor: difficultyToEase(item.difficulty, previousCard.factor),
+            factor: resolveFsrsEaseFactor(previousCard, nextType, item.difficulty, config),
             reps,
             lapses,
             left: learningLeft,
@@ -963,6 +965,55 @@ function enforceFsrsReviewPassingOrder(
     return { hard, good, easy };
 }
 
+function enforceFsrsGraduatingEasyOrder(
+    previousCard: Card,
+    fsrsGoodIntervalDays: number,
+    easy: SchedulerTransition,
+    config: SchedulerConfig,
+    now: Date,
+    collectionDayOffset = 0,
+): SchedulerTransition {
+    if (easy.nextCard.queue !== CardQueue.Review) {
+        return easy;
+    }
+
+    const goodIntervalDays = resolveFsrsReviewIntervalDays(
+        fsrsGoodIntervalDays,
+        previousCard,
+        config,
+        1,
+    );
+
+    return applyReviewIntervalMinimum(
+        easy,
+        goodIntervalDays + 1,
+        config.maximumInterval,
+        now,
+        collectionDayOffset,
+    );
+}
+
+function resolveFsrsReviewIntervalDays(
+    intervalDays: number,
+    previousCard: Card,
+    config: SchedulerConfig,
+    minimum: number,
+): number {
+    const maximum = Math.max(1, Math.trunc(config.maximumInterval));
+    const normalizedMinimum = clamp(Math.max(1, Math.trunc(minimum)), 1, maximum);
+
+    if (config.enableFuzz) {
+        return fuzzInterval(intervalDays, {
+            cardId: previousCard.id,
+            reps: previousCard.reps,
+            minimum: normalizedMinimum,
+            maximum,
+        });
+    }
+
+    return clamp(Math.round(intervalDays), normalizedMinimum, maximum);
+}
+
 function applyReviewIntervalMinimum(
     transition: SchedulerTransition,
     minimum: number,
@@ -1051,6 +1102,25 @@ function difficultyToEase(difficulty: number, fallbackEase: number): number {
         return clamp(fallbackEase || 2500, 1300, 3000);
     }
     return fromDifficulty;
+}
+
+function resolveFsrsEaseFactor(
+    previousCard: Card,
+    nextType: CardType,
+    difficulty: number,
+    config: SchedulerConfig,
+): number {
+    if (nextType === CardType.Review) {
+        if (previousCard.type === CardType.New || previousCard.type === CardType.Learning) {
+            return clamp(config.startingEase, 1300, 3000);
+        }
+
+        if (previousCard.type === CardType.Relearning) {
+            return clamp(previousCard.factor || config.startingEase, 1300, 3000);
+        }
+    }
+
+    return difficultyToEase(difficulty, previousCard.factor);
 }
 
 function clamp(value: number, min: number, max: number): number {
