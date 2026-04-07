@@ -196,6 +196,9 @@ describe("Phase 7 statistics", () => {
         const dayThreeForecast = snapshot.forecast.find((entry) => entry.dayOffset === 3);
         expect(dayThreeForecast?.review).toBe(1);
 
+        const zeroDayInterval = snapshot.intervalDistribution.find((entry) => entry.label === "0d");
+        expect(zeroDayInterval?.count).toBe(1);
+
         expect(snapshot.intervalDistribution.some((entry) => entry.count > 0)).toBe(true);
         expect(snapshot.difficultyDistribution.some((entry) => entry.count > 0)).toBe(true);
         expect(snapshot.hourlyDistribution).toHaveLength(24);

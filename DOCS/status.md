@@ -1252,3 +1252,19 @@ The most impactful gap is the short-term handling — without it, FSRS cards tha
 - Verification completed:
 	- `npm run test -- src/lib/scheduler/__tests__/phase2-scheduler.test.ts` ✅ (38/38)
 
+- Updated `/stats` interval distribution behavior and visualization.
+	- `src/hooks/use-stats.ts`
+		- Updated `buildIntervalDistribution()` so **new cards are not indexed into the `0d` interval bucket**.
+		- New cards are now excluded from interval bucketing when `type=0` or `queue=0`.
+	- `src/components/stats/IntervalDistributionCard.tsx`
+		- Added a dedicated interval distribution **line graph** card (SVG line + area + point markers + axis labels).
+	- `src/app/stats/page.tsx`
+		- Replaced the old bar-style interval distribution card with the new line-chart card.
+		- Kept card maturity distribution unchanged.
+	- `src/hooks/__tests__/phase7-stats.test.ts`
+		- Added regression assertion for `0d` bucket count to ensure new cards are not counted as 0-day intervals.
+
+- Verification completed:
+	- `npm run typecheck` ✅
+	- `npm run test -- src/hooks/__tests__/phase7-stats.test.ts` ✅
+

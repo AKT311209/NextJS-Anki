@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { IntervalDistributionCard } from "../../components/stats/IntervalDistributionCard";
 import { DifficultyDistributionCard } from "@/components/stats/DifficultyDistributionCard";
 import { FutureDueCard } from "@/components/stats/FutureDueCard";
 import { ReviewHoursCard } from "@/components/stats/ReviewHoursCard";
@@ -81,7 +82,7 @@ export default function StatsPage() {
                     <ReviewHeatmap days={stats.stats.reviewHeatmap} />
 
                     <section className="grid gap-4 xl:grid-cols-2">
-                        <DistributionCard title="Interval distribution" points={stats.stats.intervalDistribution} />
+                        <IntervalDistributionCard points={stats.stats.intervalDistribution} />
                         <DistributionCard title="Card maturity" points={stats.stats.maturityBreakdown} />
                     </section>
 

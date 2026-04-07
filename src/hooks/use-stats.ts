@@ -1042,6 +1042,14 @@ function buildIntervalDistribution(cardRows: readonly CardStatsRow[]): Distribut
     const counts = Array.from({ length: INTERVAL_BUCKETS.length }, () => 0);
 
     for (const card of cardRows) {
+        const type = asFiniteInteger(card.type);
+        const queue = asFiniteInteger(card.queue);
+
+        // Anki-style interval charts should not index new cards as 0-day intervals.
+        if (type === 0 || queue === 0) {
+            continue;
+        }
+
         const interval = Math.max(0, asFiniteInteger(card.ivl));
         const bucketIndex = findBucketIndex(interval, INTERVAL_BUCKETS);
         if (bucketIndex >= 0) {
