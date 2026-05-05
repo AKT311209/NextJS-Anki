@@ -209,9 +209,6 @@ export default function CustomStudyPage() {
                     ← Back to deck
                 </Link>
                 <h1 className="text-3xl font-bold tracking-tight text-slate-100">Custom Study</h1>
-                <p className="text-sm text-slate-400">
-                    Replicates Anki Desktop custom study modes for this deck.
-                </p>
             </header>
 
             {loading ? (
